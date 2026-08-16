@@ -477,6 +477,49 @@ async def positions() -> dict[str, Any]:
     }
 
 
+@app.get("/api/sellthrough")
+async def sellthrough() -> dict[str, Any]:
+    from .analysis import sellthrough as st_mod
+    from .esi.character import ClosedOrder
+
+    async with Database(settings.database_url) as db:
+        try:
+            raw = await db.closed_orders()
+        except Exception:  # noqa: BLE001 - table missing on an old schema
+            await db.migrate()
+            raw = await db.closed_orders()
+        closed = [ClosedOrder.model_validate(r) for r in raw]
+        stats = st_mod.summarize(closed)
+        names = await db.type_names([s.type_id for s in stats])
+        positions = {p.type_id: p for p in await Ledger(db).positions()}
+
+    rows = []
+    for s in stats:
+        pos = positions.get(s.type_id)
+        rows.append(
+            {
+                "type_id": s.type_id,
+                "name": names.get(s.type_id, str(s.type_id)),
+                "orders_closed": s.orders_closed,
+                "sold_out": s.sold_out,
+                "expired_unsold": s.expired_unsold,
+                "cancelled": s.cancelled,
+                "units_listed": s.units_listed,
+                "units_sold": s.units_sold,
+                "fill_rate": s.fill_rate,
+                "daily_velocity": s.daily_velocity,
+                "window_days": s.window_days,
+                "on_hand": pos.qty_on_hand if pos else 0,
+                "days_of_cover": (
+                    pos.qty_on_hand / s.daily_velocity
+                    if pos and s.daily_velocity > 0
+                    else None
+                ),
+            }
+        )
+    return {"rows": rows}
+
+
 @app.get("/api/pnl")
 async def pnl() -> dict[str, Any]:
     async with Database(settings.database_url) as db:
@@ -550,12 +593,16 @@ async def action_sync() -> dict[str, Any]:
     async def run() -> str:
         async with build_client(access_token=tokens.access_token) as esi:
             transactions = await character.my_transactions(esi, tokens.character_id)
+            closed = await character.my_order_history(esi, tokens.character_id)
         async with Database(settings.database_url) as db:
+            await db.migrate()  # idempotent; keeps older installs working
             counts = await Ledger(db).sync_transactions(
                 transactions, sales_tax=settings.sales_tax
             )
+            recorded = await db.upsert_closed_orders(closed)
         return (
-            f"imported {counts['purchases']} purchases, {counts['sales']} sales "
+            f"imported {counts['purchases']} purchases, {counts['sales']} sales, "
+            f"{recorded} closed orders "
             f"({counts['already_seen']} already imported, {counts['skipped']} skipped)"
         )
 

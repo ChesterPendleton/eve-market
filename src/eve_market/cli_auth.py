@@ -265,17 +265,22 @@ def sync(
     async def run() -> None:
         async with build_client(access_token=tokens.access_token) as esi:
             transactions = await character.my_transactions(esi, tokens.character_id)
+            closed = await character.my_order_history(esi, tokens.character_id)
 
         async with Database(settings.database_url) as db:
+            # migrate is idempotent; keeps older installs working after pull.
+            await db.migrate()
             counts = await Ledger(db).sync_transactions(
                 transactions,
                 sales_tax=settings.sales_tax,
                 broker_fee_on_buys=broker_fee_on_buys,
             )
+            counts["closed_orders"] = await db.upsert_closed_orders(closed)
 
         table = Table("", "Count")
         table.add_row("Purchases imported", str(counts["purchases"]))
         table.add_row("Sales imported", str(counts["sales"]))
+        table.add_row("Closed orders recorded", str(counts["closed_orders"]))
         table.add_row("Skipped (no matching stock)", str(counts["skipped"]))
         table.add_row("Already imported", str(counts["already_seen"]))
         console.print(table)
@@ -341,6 +346,60 @@ def structures(name: str = typer.Argument(..., help="Structure name to search fo
     asyncio.run(run())
 
 
+def sellthrough() -> None:
+    """How fast your stock actually sells, measured from closed orders.
+
+    ``stock`` estimates demand from market history; this is ground truth from
+    your own order outcomes. Run ``sync`` first to pull the history in.
+    """
+
+    async def run() -> None:
+        from .analysis import sellthrough as st_mod
+        from .esi.character import ClosedOrder
+
+        async with Database(settings.database_url) as db:
+            raw = await db.closed_orders()
+            closed = [ClosedOrder.model_validate(r) for r in raw]
+            if not closed:
+                console.print(
+                    "[yellow]no closed orders recorded[/] — run `eve-market sync` first"
+                )
+                return
+            stats = st_mod.summarize(closed)
+            names = await db.type_names([s.type_id for s in stats])
+            ledger = Ledger(db)
+            positions = {p.type_id: p for p in await ledger.positions()}
+
+        table = Table(
+            "Item", "Closed", "Sold out", "Died", "Fill rate",
+            "Units/day", "On hand", "Days of cover",
+        )
+        for s in stats:
+            pos = positions.get(s.type_id)
+            cover = (
+                f"{pos.qty_on_hand / s.daily_velocity:,.0f}"
+                if pos and s.daily_velocity > 0
+                else "—"
+            )
+            table.add_row(
+                names.get(s.type_id, str(s.type_id)),
+                str(s.orders_closed),
+                str(s.sold_out),
+                str(s.expired_unsold),
+                f"{s.fill_rate:.0%}" if s.fill_rate is not None else "—",
+                f"{s.daily_velocity:,.1f}",
+                f"{pos.qty_on_hand:,}" if pos else "0",
+                cover,
+            )
+        console.print(table)
+        console.print(
+            "[dim]Sold out = the market took everything; carry more. "
+            "Died = expired with stock left; carry less or price lower.[/]"
+        )
+
+    asyncio.run(run())
+
+
 def register(app: typer.Typer) -> None:
     """Attach the authenticated commands to the main CLI app."""
     app.command()(login)
@@ -350,3 +409,4 @@ def register(app: typer.Typer) -> None:
     app.command()(sync)
     app.command("open")(open_market)
     app.command()(structures)
+    app.command()(sellthrough)

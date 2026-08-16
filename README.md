@@ -188,8 +188,11 @@ nothing. And an order undercut *below your cost floor* is flagged rather than
 suggested — matching that price would lose money.
 
 `sync` imports wallet transactions and dedupes them, so purchases and sales
-land in the ledger without typing `buy`/`sell` by hand. ESI keeps roughly the
-last 30 days, so sync regularly — aged-out history is gone for good.
+land in the ledger without typing `buy`/`sell` by hand. It also records your
+closed orders, which feeds `sellthrough` — measured demand from your own
+order outcomes: fill rates, units/day, and days of cover per item. ESI keeps
+roughly the last 30 days of transactions and ~90 days of closed orders, so
+sync regularly — aged-out history is gone for good.
 
 ---
 
@@ -317,7 +320,8 @@ replaced by `_`: `/v1/markets/10000002/orders/` →
 | `login` / `whoami` | Connect your character via SSO |
 | `orders` | Your live market orders |
 | `relist` | **Undercut worklist** with the price to fix each |
-| `sync` | Import wallet transactions into the ledger |
+| `sync` | Import wallet transactions and closed orders |
+| `sellthrough` | Measured demand from your closed orders |
 | `open <item>` | Open an item's market window in the client |
 | `resolve <system>` | Confirm destination ids and security status |
 | `migrate` | Create the schema |
@@ -387,8 +391,5 @@ are expected.
 ## Next steps
 
 - **Scheduled snapshots** so spreads can be watched widening, not just existing.
-- **Order-state history** from `/characters/{id}/orders/history/`, to measure
-  how long stock actually takes to clear at a given price. Right now
-  `--days-of-stock` is your estimate; that endpoint would make it measured.
 - **Corporation wallets**, if you ever run this out of a corp.
 - **Dashboard extras** — history charts and a session log for the relist walk.

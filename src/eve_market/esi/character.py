@@ -37,6 +37,25 @@ class CharacterOrder(BaseModel):
     escrow: float | None = None
 
 
+class ClosedOrder(CharacterOrder):
+    """A finished order from the order history endpoint.
+
+    ESI reports ``state`` as "cancelled" or "expired" only. An order that sold
+    out completely still closes as "expired" with ``volume_remain`` 0, so
+    "did it sell?" is answered by the volumes, not the state.
+    """
+
+    state: str = "expired"
+
+    @property
+    def units_sold(self) -> int:
+        return self.volume_total - self.volume_remain
+
+    @property
+    def sold_out(self) -> bool:
+        return self.volume_remain == 0
+
+
 class WalletTransaction(BaseModel):
     transaction_id: int
     type_id: int
@@ -70,6 +89,12 @@ async def my_orders(esi: EsiClient, character_id: int) -> list[CharacterOrder]:
     page = await esi.get(f"/v2/characters/{character_id}/orders/")
     rows = page.data if isinstance(page.data, list) else []
     return [CharacterOrder.model_validate(r) for r in rows]
+
+
+async def my_order_history(esi: EsiClient, character_id: int) -> list[ClosedOrder]:
+    """Closed orders — roughly the last 90 days, cancelled and expired alike."""
+    rows = await esi.get_all_pages(f"/v1/characters/{character_id}/orders/history/")
+    return [ClosedOrder.model_validate(r) for r in rows]
 
 
 async def my_transactions(

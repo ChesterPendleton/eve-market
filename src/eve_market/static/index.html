@@ -151,6 +151,7 @@
   <button data-tab="price">Price &amp; record</button>
   <button data-tab="orders">My orders</button>
   <button data-tab="position">Position</button>
+  <button data-tab="sellthrough">Sell-through</button>
   <button data-tab="pnl">P&amp;L</button>
 </nav>
 <main id="main"></main>
@@ -539,6 +540,30 @@ const tabs = {
       {key:"capital_tied_up", label:"Capital", num:true, render: r => iskShort(r.capital_tied_up)},
     ], rows, {key:"capital_tied_up", dir:-1});
     if (!rows.length) h += `<div class="notice info">No stock on the books yet. Record purchases with <code>eve-market buy</code> or run Sync wallet after trading.</div>`;
+    $("#main").innerHTML = h;
+  },
+
+  async sellthrough() {
+    const data = await api("/api/sellthrough");
+    const rows = data.rows || [];
+    if (!rows.length) {
+      $("#main").innerHTML = `<div class="notice info">No closed orders recorded yet. Run <b>Sync wallet</b> (it now also pulls your order history) and check back — this becomes your measured demand: how fast stock <i>actually</i> sells, from your own order outcomes.</div>`;
+      return;
+    }
+    let h = `<div class="totals">Measured from your closed sell orders. <b>Sold out</b> = the market took everything, carry more. <b>Died</b> = expired with stock left, carry less or price lower.</div>`;
+    h += table("sellthrough", [
+      {key:"name", label:"Item", item:true, render: r => esc(r.name)},
+      {key:"orders_closed", label:"Closed", num:true, render: r => r.orders_closed},
+      {key:"sold_out", label:"Sold out", num:true, render: r => r.sold_out
+        ? `<span class="status"><span class="dot" style="background:var(--good)"></span>${r.sold_out}</span>` : "0"},
+      {key:"expired_unsold", label:"Died", num:true, render: r => r.expired_unsold
+        ? `<span class="status"><span class="dot" style="background:var(--warning)"></span>${r.expired_unsold}</span>` : "0"},
+      {key:"units_sold", label:"Sold / listed", num:true, render: r => `${r.units_sold.toLocaleString()} / ${r.units_listed.toLocaleString()}`},
+      {key:"fill_rate", label:"Fill rate", num:true, render: r => r.fill_rate != null ? pct(r.fill_rate) : "—"},
+      {key:"daily_velocity", label:"Units/day", num:true, render: r => r.daily_velocity.toFixed(1)},
+      {key:"on_hand", label:"On hand", num:true, render: r => r.on_hand.toLocaleString()},
+      {key:"days_of_cover", label:"Days of cover", num:true, render: r => r.days_of_cover != null ? r.days_of_cover.toFixed(0) : "—"},
+    ], rows, {key:"units_sold", dir:-1});
     $("#main").innerHTML = h;
   },
 

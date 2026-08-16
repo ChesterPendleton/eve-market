@@ -99,3 +99,31 @@ async def test_empty_inputs_are_no_ops(db: Database):
     assert await db.save_history(10000002, 34, []) == 0
     assert await db.upsert_types([]) == 0
     assert await db.type_names([]) == {}
+
+
+async def test_closed_orders_roundtrip_and_upsert(db):
+    from datetime import UTC, datetime
+
+    from eve_market.esi.character import ClosedOrder
+
+    order = ClosedOrder(
+        order_id=800100,
+        type_id=3244,
+        region_id=10000067,
+        location_id=60012721,
+        price=1949999.99,
+        volume_total=100,
+        volume_remain=40,
+        duration=90,
+        issued=datetime(2026, 8, 1, tzinfo=UTC),
+        state="expired",
+    )
+    assert await db.upsert_closed_orders([order]) == 1
+
+    # The same order arriving again with more sold must update, not duplicate.
+    order.volume_remain = 0
+    await db.upsert_closed_orders([order])
+    rows = await db.closed_orders()
+    mine = [r for r in rows if r["order_id"] == 800100]
+    assert len(mine) == 1
+    assert mine[0]["volume_remain"] == 0

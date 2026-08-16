@@ -193,6 +193,51 @@ class Database:
         )
         return {r["type_id"]: float(r["v"]) for r in rows if r["v"] is not None}
 
+    async def upsert_closed_orders(self, orders: Sequence[Any]) -> int:
+        """Store closed orders from the history endpoint; upsert by order id.
+
+        ESI forgets after ~90 days; this table is what makes sell-through
+        measurable over a longer horizon.
+        """
+        if not orders:
+            return 0
+        pool = self._require_pool()
+        await pool.executemany(
+            "INSERT INTO character_order_history "
+            "(order_id, type_id, region_id, location_id, is_buy_order, price, "
+            " volume_total, volume_remain, duration, issued, state) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) "
+            "ON CONFLICT (order_id) DO UPDATE SET "
+            "volume_remain = EXCLUDED.volume_remain, state = EXCLUDED.state",
+            [
+                (
+                    o.order_id,
+                    o.type_id,
+                    o.region_id,
+                    o.location_id,
+                    o.is_buy_order,
+                    round(o.price, 2),
+                    o.volume_total,
+                    o.volume_remain,
+                    o.duration,
+                    o.issued,
+                    o.state,
+                )
+                for o in orders
+            ],
+        )
+        return len(orders)
+
+    async def closed_orders(self) -> list[dict[str, Any]]:
+        """Everything the order-history sync has accumulated."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            "SELECT order_id, type_id, region_id, location_id, is_buy_order, "
+            "price, volume_total, volume_remain, duration, issued, state "
+            "FROM character_order_history ORDER BY issued"
+        )
+        return [{**dict(r), "price": float(r["price"])} for r in rows]
+
     async def upsert_types(self, rows: Sequence[dict[str, Any]]) -> int:
         """Load the SDE slice used by naming and hauling."""
         if not rows:

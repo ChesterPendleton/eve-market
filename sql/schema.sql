@@ -130,3 +130,22 @@ CREATE TABLE IF NOT EXISTS lot_consumption (
     unit_landed_cost NUMERIC(18,2) NOT NULL,
     PRIMARY KEY (sale_id, lot_id)
 );
+
+-- Closed orders from /characters/{id}/orders/history/. ESI keeps ~90 days;
+-- syncing regularly builds a durable record of how fast stock actually sells.
+CREATE TABLE IF NOT EXISTS character_order_history (
+    order_id      BIGINT PRIMARY KEY,
+    type_id       INTEGER       NOT NULL,
+    region_id     INTEGER,
+    location_id   BIGINT,
+    is_buy_order  BOOLEAN       NOT NULL,
+    price         NUMERIC(18,2) NOT NULL,
+    volume_total  INTEGER       NOT NULL,
+    volume_remain INTEGER       NOT NULL,
+    duration      INTEGER       NOT NULL,
+    issued        TIMESTAMPTZ   NOT NULL,
+    state         TEXT          NOT NULL,
+    recorded_at   TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_order_history_type
+    ON character_order_history (type_id, issued);
