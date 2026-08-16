@@ -12,6 +12,24 @@ from .client import EsiClient
 from .models import AdjustedPrice, HistoryDay, MarketOrder
 
 
+async def structure_book(
+    esi: EsiClient, structure_id: int, system_id: int | None = None
+) -> list[MarketOrder]:
+    """A player structure's order book, shaped like region orders.
+
+    Structure orders carry no ``system_id``; the caller passes the system the
+    structure lives in so downstream screens can filter by destination system
+    exactly as they do for NPC stations.
+    """
+    rows = await esi.get_all_pages(f"/v1/markets/structures/{structure_id}/")
+    out = []
+    for r in rows:
+        if system_id is not None:
+            r = {**r, "system_id": system_id}
+        out.append(MarketOrder.model_validate(r))
+    return out
+
+
 async def region_orders(
     esi: EsiClient,
     region_id: int,

@@ -114,16 +114,52 @@ def migrate() -> None:
 
 
 @app.command()
-def snapshot(region: str = typer.Argument("the_forge")) -> None:
-    """Pull a region's entire order book and store it."""
+def snapshot(
+    region: str = typer.Argument("the_forge"),
+    structure: int = typer.Option(
+        0,
+        help="Also merge this player structure's order book (requires login). "
+        "Defaults to EVE_DEST_STRUCTURE_ID when snapshotting the destination region.",
+    ),
+) -> None:
+    """Pull a region's entire order book and store it.
+
+    Citadel markets are invisible to unauthenticated ESI, so if the real hub
+    is a player structure, pass ``--structure`` (or set EVE_DEST_STRUCTURE_ID)
+    and its book is fetched with your character's access and merged into the
+    same snapshot.
+    """
     region_id = _region_id(region)
+    structure_id = structure
+    if not structure_id and region_id == settings.dest_region_id:
+        structure_id = settings.dest_structure_id
 
     async def run() -> None:
         async with build_client() as esi, Database(settings.database_url) as db:
             with console.status(f"fetching order book for {region}..."):
                 orders = await market.region_orders(esi, region_id)
+            merged = 0
+            if structure_id:
+                from . import auth as auth_mod
+
+                tokens = auth_mod.ensure_fresh(settings.client_id)
+                if tokens is None:
+                    console.print(
+                        "[yellow]structure book skipped[/] — not logged in "
+                        "(run `eve-market login`)"
+                    )
+                else:
+                    async with build_client(access_token=tokens.access_token) as auth_esi:
+                        extra = await market.structure_book(
+                            auth_esi, structure_id, settings.dest_system_id or None
+                        )
+                    orders = list(orders) + extra
+                    merged = len(extra)
             snapshot_id = await db.save_snapshot(region_id, orders)
-        console.print(f"[green]saved[/] {len(orders):,} orders as snapshot {snapshot_id}")
+        note = f" (incl. {merged:,} structure orders)" if merged else ""
+        console.print(
+            f"[green]saved[/] {len(orders):,} orders as snapshot {snapshot_id}{note}"
+        )
 
     asyncio.run(run())
 

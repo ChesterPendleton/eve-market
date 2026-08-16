@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     dest_region_id: int = 10000067  # Genesis — verify
     dest_system_id: int = 0  # 0 means "not yet resolved"
     dest_station_id: int = 0  # optional; 0 means "any station in the system"
+    # A player structure whose market is the real destination hub. 0 means
+    # none. Find it with `eve-market structures <name>`; snapshots of the
+    # destination region then merge its order book in automatically.
+    dest_structure_id: int = 0
     # Set by `resolve` from the system's real security status. Drives the
     # default risk model, so a wrong value here quietly distorts every margin.
     dest_is_lowsec: bool = True

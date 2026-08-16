@@ -77,6 +77,28 @@ def _start_job(name: str, coro: Any) -> None:
     _job_task = asyncio.get_running_loop().create_task(wrap())
 
 
+async def _full_region_book(region_id: int) -> tuple[list, int]:
+    """A region's public order book, plus the destination citadel's if set.
+
+    Citadel markets are invisible to unauthenticated ESI; when the snapshot
+    covers the destination region and a structure id and login are present,
+    that book is fetched with the character's access and merged in.
+    """
+    async with build_client() as esi:
+        book = list(await market.region_orders(esi, region_id))
+    merged = 0
+    if region_id == settings.dest_region_id and settings.dest_structure_id:
+        tokens = _tokens()
+        if tokens is not None:
+            async with build_client(access_token=tokens.access_token) as esi:
+                extra = await market.structure_book(
+                    esi, settings.dest_structure_id, settings.dest_system_id or None
+                )
+            book += extra
+            merged = len(extra)
+    return book, merged
+
+
 # ---------------------------------------------------------------------------
 # Auto-refresh: re-snapshot both regions and top up history on an interval
 # ---------------------------------------------------------------------------
@@ -90,11 +112,11 @@ _autorefresh_task: asyncio.Task | None = None
 async def _refresh_all() -> str:
     parts = []
     for region_id in (settings.source_region_id, settings.dest_region_id):
-        async with build_client() as esi:
-            book = await market.region_orders(esi, region_id)
+        book, merged = await _full_region_book(region_id)
         async with Database(settings.database_url) as db:
             await db.save_snapshot(region_id, book)
-        parts.append(f"{region_id}: {len(book):,} orders")
+        note = f" (+{merged} citadel)" if merged else ""
+        parts.append(f"{region_id}: {len(book):,} orders{note}")
     for region_id in (settings.source_region_id, settings.dest_region_id):
         async with Database(settings.database_url) as db, build_client() as esi:
             snapshot_id = await db.latest_snapshot(region_id)
@@ -483,11 +505,11 @@ async def action_snapshot(body: RegionBody) -> dict[str, Any]:
     region_id = _region_id(body.region)
 
     async def run() -> str:
-        async with build_client() as esi:
-            book = await market.region_orders(esi, region_id)
+        book, merged = await _full_region_book(region_id)
         async with Database(settings.database_url) as db:
             snapshot_id = await db.save_snapshot(region_id, book)
-        return f"saved {len(book):,} orders as snapshot {snapshot_id}"
+        note = f" (incl. {merged:,} structure orders)" if merged else ""
+        return f"saved {len(book):,} orders as snapshot {snapshot_id}{note}"
 
     _start_job(f"snapshot {body.region}", run())
     return {"started": True}

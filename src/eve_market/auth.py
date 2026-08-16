@@ -41,6 +41,8 @@ SCOPES = [
     "esi-wallet.read_character_wallet.v1",  # transactions, to fill the ledger
     "esi-assets.read_assets.v1",  # stock on hand
     "esi-markets.structure_markets.v1",  # citadel order books you can dock at
+    "esi-universe.read_structures.v1",  # structure names and solar systems
+    "esi-search.search_structures.v1",  # find a structure id by name
     "esi-ui.open_window.v1",  # open the market window in the client
     "esi-ui.write_waypoint.v1",  # set a hauling route
 ]

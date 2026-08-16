@@ -100,6 +100,23 @@ async def structure_orders(esi: EsiClient, structure_id: int) -> list[dict]:
     return await esi.get_all_pages(f"/v1/markets/structures/{structure_id}/")
 
 
+async def structure_info(esi: EsiClient, structure_id: int) -> dict:
+    """Name and solar system of a structure you have docking access to."""
+    page = await esi.get(f"/v2/universe/structures/{structure_id}/")
+    return page.data
+
+
+async def search_structures(
+    esi: EsiClient, character_id: int, name: str
+) -> list[int]:
+    """Structure ids matching a name, seen through this character's access."""
+    page = await esi.get(
+        f"/v3/characters/{character_id}/search/",
+        params={"categories": "structure", "search": name},
+    )
+    return list(page.data.get("structure", []))
+
+
 async def open_market_window(esi: EsiClient, type_id: int) -> None:
     """Open an item's market details window in the running client.
 

@@ -305,6 +305,42 @@ def open_market(item: str = typer.Argument(..., help="Item name or type id")) ->
     asyncio.run(run())
 
 
+def structures(name: str = typer.Argument(..., help="Structure name to search for")) -> None:
+    """Find a player structure's id by name, for EVE_DEST_STRUCTURE_ID.
+
+    Searches with your character's access: only structures you can dock at
+    (or that are public) appear. Citadel markets need this id — their books
+    are invisible to unauthenticated ESI.
+    """
+    tokens = _require_tokens()
+
+    async def run() -> None:
+        async with build_client(access_token=tokens.access_token) as esi:
+            ids = await character.search_structures(esi, tokens.character_id, name)
+            if not ids:
+                console.print(
+                    f"[yellow]no structures matching {name!r}[/] visible to "
+                    f"{tokens.character_name}. You need docking access (or the "
+                    "structure must be public) for it to appear."
+                )
+                return
+            table = Table("Structure id", "Name", "System")
+            for sid in ids[:20]:
+                try:
+                    info = await character.structure_info(esi, sid)
+                    table.add_row(
+                        str(sid), info.get("name", "?"), str(info.get("solar_system_id", "?"))
+                    )
+                except Exception as exc:  # noqa: BLE001 - no docking access
+                    table.add_row(str(sid), f"[dim]no access ({str(exc)[:40]})[/]", "?")
+        console.print(table)
+        console.print(
+            "\n[bold]Add to .env:[/] EVE_DEST_STRUCTURE_ID=<the id of your market hub>"
+        )
+
+    asyncio.run(run())
+
+
 def register(app: typer.Typer) -> None:
     """Attach the authenticated commands to the main CLI app."""
     app.command()(login)
@@ -313,3 +349,4 @@ def register(app: typer.Typer) -> None:
     app.command()(relist)
     app.command()(sync)
     app.command("open")(open_market)
+    app.command()(structures)

@@ -251,7 +251,20 @@ separately.
 ## Citadel markets
 
 If the destination market is a player citadel, unauthenticated ESI cannot see
-it at all. Use the client's own export:
+it at all. Two ways in:
+
+**With SSO (preferred).** Log in, find the structure id, and set it:
+
+```bash
+eve-market structures Ahbazon      # lists structure ids you can dock at
+# put the market hub's id in .env as EVE_DEST_STRUCTURE_ID
+eve-market snapshot genesis        # now merges the citadel book automatically
+```
+
+Every destination-region snapshot — CLI or dashboard, manual or auto-refresh —
+then includes the citadel's order book, fetched with your character's access.
+
+**Without SSO.** Use the client's own export:
 
 1. In EVE, open the market and click export.
 2. `eve-market import-marketlog ~/Documents/EVE/logs/Marketlogs`
@@ -373,10 +386,6 @@ are expected.
 
 ## Next steps
 
-- **Citadel order books.** `esi-markets.structure_markets.v1` is already in the
-  requested scopes and `esi/character.py` has the wrapper; wiring
-  `structure_orders` into `snapshot` would cover Ahbazon citadels without the
-  market-log export.
 - **Scheduled snapshots** so spreads can be watched widening, not just existing.
 - **Order-state history** from `/characters/{id}/orders/history/`, to measure
   how long stock actually takes to clear at a given price. Right now

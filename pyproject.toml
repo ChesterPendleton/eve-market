@@ -49,4 +49,6 @@ target-version = "py311"
 # DTZ011: date.today() is correct for market history, which is date-only.
 # S112: skipping a malformed row in a market export is deliberate; logging
 #       every bad line would bury the useful output.
-ignore = ["B008", "DTZ011", "S112"]
+# E402: cli.py registers subcommand modules after the app exists, and
+#       test_webui.py must importorskip fastapi before importing the module.
+ignore = ["B008", "DTZ011", "S112", "E402"]
