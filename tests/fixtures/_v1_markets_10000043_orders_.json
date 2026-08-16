@@ -1,0 +1,9 @@
+[{"order_id": 7001, "type_id": 34, "location_id": 60008494, "system_id": 30002187,
+  "is_buy_order": true, "price": 6.85, "volume_remain": 5000000, "volume_total": 8000000,
+  "min_volume": 1, "duration": 90, "issued": "2026-08-12T10:05:00Z", "range": "region"},
+ {"order_id": 7002, "type_id": 34, "location_id": 60008494, "system_id": 30002187,
+  "is_buy_order": false, "price": 7.40, "volume_remain": 3000000, "volume_total": 5000000,
+  "min_volume": 1, "duration": 90, "issued": "2026-08-12T11:30:00Z", "range": "station"},
+ {"order_id": 7003, "type_id": 44992, "location_id": 60008494, "system_id": 30002187,
+  "is_buy_order": true, "price": 4520.0, "volume_remain": 18000, "volume_total": 25000,
+  "min_volume": 1, "duration": 30, "issued": "2026-08-13T16:12:00Z", "range": "region"}]
