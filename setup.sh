@@ -90,6 +90,23 @@ else
   yellow "migrate failed — check EVE_DATABASE_URL in .env"
 fi
 
+# The database tests TRUNCATE, so they run against their own database. Without
+# this, `pytest` would wipe your real ledger and snapshots.
+step "Creating the test database"
+if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+  if docker compose exec -T postgres psql -U eve -d postgres \
+       -tAc "SELECT 1 FROM pg_database WHERE datname='eve_market_test'" 2>/dev/null | grep -q 1; then
+    green "eve_market_test already exists"
+  elif docker compose exec -T postgres createdb -U eve eve_market_test 2>/dev/null; then
+    green "created eve_market_test"
+  else
+    yellow "could not create eve_market_test — database tests will skip"
+  fi
+else
+  yellow "Docker unavailable; create a database named eve_market_test yourself,"
+  yellow "or set EVE_TEST_DATABASE_URL. Database tests skip without it."
+fi
+
 # --- 7. Static Data Export -------------------------------------------------
 # The SDE gives us item names and packaged volumes. Without it everything
 # still works, but items show as numeric type ids and hauling can't compute

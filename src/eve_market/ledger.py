@@ -317,6 +317,72 @@ class Ledger:
             "margin": (gross - fees - cogs) / cogs if cogs else 0.0,
         }
 
+    async def sync_transactions(
+        self,
+        transactions: list,
+        *,
+        sales_tax: float,
+        broker_fee_on_buys: float = 0.0,
+    ) -> dict[str, int]:
+        """Fold wallet transactions into the ledger, skipping ones already seen.
+
+        Processed oldest first so a sale never runs before the purchase that
+        stocked it. A sale with no matching lot is skipped and counted rather
+        than guessed at — inventing a cost basis would silently corrupt every
+        profit number downstream.
+
+        ``broker_fee_on_buys`` defaults to zero because a transaction doesn't
+        record whether you bought instantly or off your own buy order, and the
+        placement fee is a separate journal entry either way.
+        """
+        pool = self._require_pool()
+        seen = {
+            r["transaction_id"]
+            for r in await pool.fetch("SELECT transaction_id FROM imported_transaction")
+        }
+
+        fresh = sorted(
+            (t for t in transactions if t.transaction_id not in seen),
+            key=lambda t: t.date,
+        )
+        counts = {"purchases": 0, "sales": 0, "skipped": 0, "already_seen": len(seen)}
+
+        for txn in fresh:
+            try:
+                if txn.is_buy:
+                    await self.record_purchase(
+                        txn.type_id,
+                        txn.quantity,
+                        txn.unit_price,
+                        broker_fee=broker_fee_on_buys,
+                        station_id=txn.location_id,
+                        note=f"txn {txn.transaction_id}",
+                    )
+                    counts["purchases"] += 1
+                else:
+                    await self.record_sale(
+                        txn.type_id,
+                        txn.quantity,
+                        txn.unit_price,
+                        sales_tax=sales_tax,
+                        # The broker fee was paid when the order was placed,
+                        # not when it filled, so it isn't charged again here.
+                        broker_fee=0.0,
+                        station_id=txn.location_id,
+                    )
+                    counts["sales"] += 1
+            except ValueError:
+                counts["skipped"] += 1
+                continue
+
+            await pool.execute(
+                "INSERT INTO imported_transaction (transaction_id) VALUES ($1) "
+                "ON CONFLICT DO NOTHING",
+                txn.transaction_id,
+            )
+
+        return counts
+
     async def realized_pnl(self, type_id: int | None = None) -> dict[str, float]:
         """Totals across recorded sales."""
         pool = self.db._require_pool()

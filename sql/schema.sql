@@ -115,6 +115,14 @@ CREATE INDEX IF NOT EXISTS sale_type_time_idx ON sale (type_id, sold_at DESC);
 
 -- Which lots covered which sale. Kept so a surprising profit number can be
 -- traced back to the purchases behind it.
+-- Wallet transactions already folded into the ledger. ESI returns a rolling
+-- window that overlaps heavily between syncs, so this is what stops the same
+-- purchase being counted five times.
+CREATE TABLE IF NOT EXISTS imported_transaction (
+    transaction_id BIGINT PRIMARY KEY,
+    imported_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS lot_consumption (
     sale_id          BIGINT NOT NULL REFERENCES sale(id) ON DELETE CASCADE,
     lot_id           BIGINT NOT NULL REFERENCES purchase_lot(id) ON DELETE CASCADE,

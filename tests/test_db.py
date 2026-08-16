@@ -14,7 +14,11 @@ from eve_market.db import Database
 
 from .conftest import make_history, make_order
 
-DSN = os.environ.get("EVE_TEST_DATABASE_URL", "postgresql://eve:eve@localhost:5432/eve_market")
+# A SEPARATE database: these tests TRUNCATE, and pointing them at the
+# working database would destroy your ledger and snapshots.
+DSN = os.environ.get(
+    "EVE_TEST_DATABASE_URL", "postgresql://eve:eve@localhost:5432/eve_market_test"
+)
 
 
 @pytest.fixture

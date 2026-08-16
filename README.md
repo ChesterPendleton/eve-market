@@ -16,20 +16,24 @@ region-to-region arbitrage (`haul`).
 
 ---
 
-## What this tool does not do
+## How it talks to the game
 
-Worth being blunt up front, because it shapes everything:
+Same model as EVE Tycoon and other ESI trading tools:
 
-- **ESI cannot place, modify, or cancel market orders.** No endpoint exists —
-  CCP has never exposed order writes, specifically to prevent botting. So this
-  tool computes prices and hands them to your clipboard. You paste them.
-- **There is no supported way to drive the EVE client.** No IPC, no API into
-  the running game. The legitimate channels are the clipboard, Multibuy paste,
-  and the client's own market log export. All three are supported here.
-- **No input automation.** Injecting keystrokes or mouse events into the client
-  is an EULA violation and a ban. This tool never touches your input devices.
+- **It reads your character through ESI** — live orders, wallet transactions,
+  assets — over SSO. That's what drives the relist worklist and fills the
+  cost-basis ledger automatically.
+- **It opens windows in your running client** via ESI's official UI endpoints
+  (`/ui/openwindow/marketdetails/`, `/ui/autopilot/waypoint/`), gated behind
+  the `esi-ui.*` scopes. `eve-market relist --open` pops each item's market
+  window as it walks your worklist.
+- **It puts the price on your clipboard.** You press Ctrl+V.
 
-Everything below keeps you as the one pressing the keys.
+The one hard limit: **ESI has no endpoint to place, modify, or cancel a market
+order.** CCP has never exposed order writes. So the tool can open the window
+and hand you the exact number, but confirming the order is always yours. No
+keystroke or mouse automation is involved anywhere — that would be an EULA
+violation, and it isn't needed for this workflow.
 
 ---
 
@@ -107,6 +111,58 @@ price rather than undercutting one — that's the niche you're trying to fill.
 Ranking is by **ISK per m3**, not margin or total profit, because cargo space
 is what limits a run. `--no-fit` shows everything; by default the list is
 trimmed to what fits in one trip.
+
+---
+
+## Connecting your character (SSO)
+
+```bash
+eve-market login      # opens EVE SSO in your browser
+eve-market whoami     # confirm character and granted scopes
+```
+
+First register a **native** application at
+[developers.eveonline.com/applications](https://developers.eveonline.com/applications),
+set its callback URL to exactly your `EVE_CALLBACK_URL`, and put the client id
+in `.env` as `EVE_CLIENT_ID`. No client secret — this uses the PKCE flow.
+
+Tokens are stored at `~/.config/eve-market/tokens.json` with `0600`
+permissions and refreshed automatically. The refresh token is a long-lived
+credential: anyone holding it can read your character data until you revoke it
+in EVE's third-party application settings.
+
+Then the relist loop:
+
+```bash
+eve-market orders               # your live market orders
+eve-market relist               # what's been undercut, and the price to fix it
+eve-market relist --open        # ...and open each market window in the client
+eve-market sync                 # import wallet transactions into the ledger
+eve-market open "Warp Disruptor II"   # open one item's market window
+```
+
+`relist` output:
+
+```
+best: 1  outbid: 1  undercut: 1
+Item                              Side  Status    Yours         Best rival    Relist at     At stake
+Warp Disruptor II                 sell  undercut  2,100,000.00  1,950,000.00  1,949,999.99  12,000,001
+Multispectrum Shield Hardener II  buy   outbid       80,000.00     91,000.00     91,000.01   5,500,005
+```
+
+Then it walks them one at a time — copying each price and, with `--open`,
+opening that item's market window — so the loop is: Enter, alt-tab, Ctrl+V,
+confirm, back.
+
+Sorted by **ISK at stake** (units remaining × the price gap), not by the size
+of the gap, so the order actually costing you the most is first. Orders you're
+already winning are hidden by default: relisting those burns a broker fee for
+nothing. And an order undercut *below your cost floor* is flagged rather than
+suggested — matching that price would lose money.
+
+`sync` imports wallet transactions and dedupes them, so purchases and sales
+land in the ledger without typing `buy`/`sell` by hand. ESI keeps roughly the
+last 30 days, so sync regularly — aged-out history is gone for good.
 
 ---
 
@@ -216,6 +272,11 @@ replaced by `_`: `/v1/markets/10000002/orders/` →
 | Command | Purpose |
 | --- | --- |
 | `doctor` | Check ESI, Redis, Postgres, config |
+| `login` / `whoami` | Connect your character via SSO |
+| `orders` | Your live market orders |
+| `relist` | **Undercut worklist** with the price to fix each |
+| `sync` | Import wallet transactions into the ledger |
+| `open <item>` | Open an item's market window in the client |
 | `resolve <system>` | Confirm destination ids and security status |
 | `migrate` | Create the schema |
 | `snapshot <region>` | Pull and store a region's order book |
@@ -235,11 +296,14 @@ replaced by `_`: `/v1/markets/10000002/orders/` →
 ## Development
 
 ```bash
-pytest        # 85 tests
+pytest        # 115 tests
 ruff check .
 ```
 
-Database tests skip automatically when Postgres isn't reachable.
+Database tests run against a **separate** `eve_market_test` database, created
+by `setup.sh`. They TRUNCATE, so pointing them at your working database would
+destroy your ledger. Override with `EVE_TEST_DATABASE_URL`; they skip entirely
+if that database isn't reachable.
 
 ```
 src/eve_market/
@@ -249,12 +313,15 @@ src/eve_market/
   ledger.py            cost basis, FIFO sales, restock pricing
   clipboard.py         Multibuy lists and price formatting
   marketlog.py         EVE client market log import
+  auth.py              EVE SSO, PKCE flow, token storage and refresh
   esi/
     client.py          ETag caching, pagination, error-limit backoff
     market.py          market endpoint wrappers
+    character.py       your orders, transactions, assets, client UI
     universe.py        name and id resolution
   analysis/
     sourcing.py        the Jita -> destination screen
+    relist.py          undercut detection and the relist worklist
     logistics.py       ship capacity, freight and risk
     margins.py         station trading spreads
     hauling.py         generic region arbitrage
@@ -277,11 +344,12 @@ are expected.
 
 ## Next steps
 
-- **SSO** for your own orders and wallet. Scaffolding is in `config.py`
-  (`client_id`/`client_secret`/`callback_url`); register at
-  [developers.eveonline.com](https://developers.eveonline.com/applications).
-  `/characters/{id}/orders/` would let `price` show which of your listings have
-  been undercut, turning the relist loop into a single worklist.
+- **Citadel order books.** `esi-markets.structure_markets.v1` is already in the
+  requested scopes and `esi/character.py` has the wrapper; wiring
+  `structure_orders` into `snapshot` would cover Ahbazon citadels without the
+  market-log export.
 - **Scheduled snapshots** so spreads can be watched widening, not just existing.
-- **Transaction import** from `/characters/{id}/wallet/transactions/` to
-  populate the ledger automatically instead of typing `buy`/`sell` by hand.
+- **Order-state history** from `/characters/{id}/orders/history/`, to measure
+  how long stock actually takes to clear at a given price. Right now
+  `--days-of-stock` is your estimate; that endpoint would make it measured.
+- **Corporation wallets**, if you ever run this out of a corp.

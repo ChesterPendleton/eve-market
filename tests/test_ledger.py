@@ -10,7 +10,11 @@ from eve_market.analysis.logistics import profile_for
 from eve_market.db import Database
 from eve_market.ledger import Ledger
 
-DSN = os.environ.get("EVE_TEST_DATABASE_URL", "postgresql://eve:eve@localhost:5432/eve_market")
+# A SEPARATE database: these tests TRUNCATE, and pointing them at the
+# working database would destroy your ledger and snapshots.
+DSN = os.environ.get(
+    "EVE_TEST_DATABASE_URL", "postgresql://eve:eve@localhost:5432/eve_market_test"
+)
 
 TRIT = 34
 PLEX = 44992

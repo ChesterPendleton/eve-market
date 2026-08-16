@@ -1,0 +1,3 @@
+[{"order_id":50001,"type_id":3244,"region_id":10000067,"location_id":60012778,"price":2100000.0,"volume_total":100,"volume_remain":80,"min_volume":1,"duration":90,"issued":"2026-08-15T10:00:00Z","range":"station"},
+ {"order_id":50002,"type_id":2048,"region_id":10000002,"location_id":60003760,"price":450000.0,"volume_total":200,"volume_remain":150,"min_volume":1,"duration":90,"issued":"2026-08-15T10:00:00Z","range":"station"},
+ {"order_id":50003,"type_id":12612,"region_id":10000067,"location_id":60012778,"is_buy_order":true,"price":80000.0,"volume_total":500,"volume_remain":500,"min_volume":1,"duration":90,"issued":"2026-08-15T10:00:00Z","range":"station"}]

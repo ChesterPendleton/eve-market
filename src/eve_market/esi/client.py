@@ -65,17 +65,22 @@ class EsiClient:
         cache: Cache | None = None,
         config: Settings | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        access_token: str | None = None,
     ):
         self.config = config or default_settings
         self.cache = cache or Cache(self.config.redis_url)
         self._sem = asyncio.Semaphore(self.config.esi_concurrency)
+        self.access_token = access_token
+        headers = {
+            "User-Agent": self.config.user_agent,
+            "Accept": "application/json",
+        }
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
         self._client = httpx.AsyncClient(
             base_url=self.config.esi_base_url,
             timeout=self.config.esi_timeout,
-            headers={
-                "User-Agent": self.config.user_agent,
-                "Accept": "application/json",
-            },
+            headers=headers,
             transport=transport,
             follow_redirects=True,
         )
@@ -311,8 +316,14 @@ class FixtureTransport(httpx.AsyncBaseTransport):
         )
 
 
-def build_client(config: Settings | None = None, cache: Cache | None = None) -> EsiClient:
+def build_client(
+    config: Settings | None = None,
+    cache: Cache | None = None,
+    access_token: str | None = None,
+) -> EsiClient:
     """Construct a client wired for live or fixture mode per configuration."""
     config = config or default_settings
     transport = None if config.esi_live else FixtureTransport(config.fixture_dir)
-    return EsiClient(cache=cache, config=config, transport=transport)
+    return EsiClient(
+        cache=cache, config=config, transport=transport, access_token=access_token
+    )
