@@ -44,3 +44,17 @@ def test_job_endpoint_reports_idle(client):
     r = client.get("/api/job")
     assert r.status_code == 200
     assert r.json()["state"] in ("idle", "running", "done", "error")
+
+
+def test_autorefresh_floor_enforced(client):
+    # ESI's error budget is shared; sub-10-minute polling is refused.
+    r = client.post("/api/actions/autorefresh", json={"minutes": 5})
+    assert r.status_code == 400
+    r = client.post("/api/actions/autorefresh", json={"minutes": 0})
+    assert r.status_code == 200
+
+
+def test_item_search_needs_two_chars(client):
+    r = client.get("/api/items", params={"q": "w"})
+    assert r.status_code == 200
+    assert r.json()["rows"] == []

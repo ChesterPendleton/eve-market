@@ -78,6 +78,59 @@ def _start_job(name: str, coro: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Auto-refresh: re-snapshot both regions and top up history on an interval
+# ---------------------------------------------------------------------------
+# Off by default. Ten-minute floor: ESI caches order books for minutes anyway,
+# and the error budget is shared across everything this app does.
+
+_autorefresh: dict[str, Any] = {"minutes": 0, "last": None, "next": None}
+_autorefresh_task: asyncio.Task | None = None
+
+
+async def _refresh_all() -> str:
+    parts = []
+    for region_id in (settings.source_region_id, settings.dest_region_id):
+        async with build_client() as esi:
+            book = await market.region_orders(esi, region_id)
+        async with Database(settings.database_url) as db:
+            await db.save_snapshot(region_id, book)
+        parts.append(f"{region_id}: {len(book):,} orders")
+    for region_id in (settings.source_region_id, settings.dest_region_id):
+        async with Database(settings.database_url) as db, build_client() as esi:
+            snapshot_id = await db.latest_snapshot(region_id)
+            if snapshot_id is None:
+                continue
+            pool = db._require_pool()
+            rows = await pool.fetch(
+                "SELECT type_id, SUM(volume_remain) AS depth FROM market_order "
+                "WHERE snapshot_id = $1 GROUP BY type_id ORDER BY depth DESC LIMIT 400",
+                snapshot_id,
+            )
+            results = await market.histories(esi, region_id, [r["type_id"] for r in rows])
+            for type_id, days in results.items():
+                await db.save_history(region_id, type_id, days)
+    return "; ".join(parts)
+
+
+async def _autorefresh_loop() -> None:
+    while True:
+        minutes = _autorefresh["minutes"]
+        if minutes <= 0:
+            return
+        _autorefresh["next"] = (
+            datetime.now(UTC).timestamp() + minutes * 60
+        )
+        await asyncio.sleep(minutes * 60)
+        if _autorefresh["minutes"] <= 0:
+            return
+        if _job_running():
+            continue  # a manual job owns the error budget right now
+        with contextlib.suppress(Exception):  # a failed cycle just waits for the next
+            _start_job("auto-refresh", _refresh_all())
+        _autorefresh["last"] = datetime.now(UTC).isoformat()
+
+
+# ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
 
@@ -183,6 +236,7 @@ async def status() -> dict[str, Any]:
         "regions": list(REGIONS),
         "sales_tax": settings.sales_tax,
         "broker_fee": settings.broker_fee,
+        "autorefresh_minutes": _autorefresh["minutes"],
     }
 
 
@@ -547,6 +601,190 @@ async def action_open_window(body: TypeBody) -> dict[str, Any]:
     async with build_client(access_token=tokens.access_token) as esi:
         await character.open_market_window(esi, body.type_id)
     return {"opened": body.type_id}
+
+
+class AutoRefreshBody(BaseModel):
+    minutes: int
+
+
+@app.post("/api/actions/autorefresh")
+async def action_autorefresh(body: AutoRefreshBody) -> dict[str, Any]:
+    global _autorefresh_task
+    minutes = body.minutes
+    if minutes and minutes < 10:
+        raise HTTPException(400, "minimum auto-refresh interval is 10 minutes")
+    _autorefresh["minutes"] = minutes
+    if minutes > 0 and (_autorefresh_task is None or _autorefresh_task.done()):
+        _autorefresh_task = asyncio.get_running_loop().create_task(_autorefresh_loop())
+    return {"minutes": minutes}
+
+
+@app.get("/api/items")
+async def items(q: str = "") -> dict[str, Any]:
+    if len(q) < 2:
+        return {"rows": []}
+    async with Database(settings.database_url) as db:
+        rows = await db._require_pool().fetch(
+            "SELECT type_id, type_name FROM inv_type WHERE published "
+            "AND type_name ILIKE $1 ORDER BY length(type_name) LIMIT 12",
+            f"%{q}%",
+        )
+    return {"rows": [{"type_id": r["type_id"], "name": r["type_name"]} for r in rows]}
+
+
+async def _type_id_for(db: Database, item: str) -> int:
+    if item.isdigit():
+        return int(item)
+    pool = db._require_pool()
+    row = await pool.fetchrow(
+        "SELECT type_id FROM inv_type WHERE lower(type_name) = lower($1)", item
+    )
+    if row is None:
+        row = await pool.fetchrow(
+            "SELECT type_id FROM inv_type WHERE type_name ILIKE $1 "
+            "ORDER BY length(type_name) LIMIT 1",
+            f"%{item}%",
+        )
+    if row is None:
+        raise HTTPException(404, f"no item matching {item!r} — has the SDE been loaded?")
+    return row["type_id"]
+
+
+@app.get("/api/price")
+async def price(item: str, side: str = "sell") -> dict[str, Any]:
+    async with Database(settings.database_url) as db:
+        type_id = await _type_id_for(db, item)
+        names = await db.type_names([type_id])
+
+        src_snap = await db.latest_snapshot(settings.source_region_id)
+        dst_snap = await db.latest_snapshot(settings.dest_region_id)
+        src_orders = await db.orders_for_type(src_snap, type_id) if src_snap else []
+        dst_orders = await db.orders_for_type(dst_snap, type_id) if dst_snap else []
+
+        jita = [o for o in src_orders if o.location_id == settings.source_station_id]
+        jita_sell = sourcing.summarize_side(jita, buy=False)
+        jita_buy = sourcing.summarize_side(jita, buy=True)
+        dest = sourcing.in_system(dst_orders, settings.dest_system_id or None)
+        dest_sell = sourcing.summarize_side(dest, buy=False)
+        dest_buy = sourcing.summarize_side(dest, buy=True)
+
+        volumes = await db.type_volumes([type_id])
+        profile = profile_for(
+            settings.ship,
+            route_is_lowsec=settings.dest_is_lowsec,
+            self_hauling=settings.self_hauling,
+            cost_per_m3=settings.haul_cost_per_m3,
+            risk_pct=settings.haul_risk_pct,
+        )
+        guide = await Ledger(db).price_guide(
+            type_id,
+            sales_tax=settings.sales_tax,
+            broker_fee=settings.broker_fee,
+            replacement_unit_cost=jita_sell.best_price,
+            haul=profile,
+            unit_volume_m3=volumes.get(type_id),
+            market_price=dest_sell.best_price,
+            undercut_isk=settings.undercut_isk,
+        )
+
+    out: dict[str, Any] = {
+        "type_id": type_id,
+        "name": names.get(type_id, str(type_id)),
+        "book": {
+            "jita_sell": asdict(jita_sell),
+            "jita_buy": asdict(jita_buy),
+            "dest_sell": asdict(dest_sell),
+            "dest_buy": asdict(dest_buy),
+        },
+        "guide": {
+            "qty_on_hand": guide.qty_on_hand,
+            "avg_landed_cost": guide.avg_landed_cost,
+            "break_even_price": guide.break_even_price,
+            "replacement_price": guide.replacement_price,
+            "floor_price": guide.floor_price,
+            "suggested_price": guide.suggested_price,
+            "beats_floor": guide.beats_floor,
+        },
+    }
+    if side == "buy":
+        out["target"] = (
+            jita_buy.best_price + settings.undercut_isk
+            if jita_buy.best_price is not None
+            else None
+        )
+    else:
+        out["target"] = guide.suggested_price
+        if guide.suggested_price is not None:
+            out["nets_per_unit"] = guide.suggested_price * (
+                1 - settings.sales_tax - settings.broker_fee
+            ) - guide.avg_landed_cost
+        if guide.suggested_price is None and dest_buy.best_price is not None:
+            out["instant_net"] = dest_buy.best_price * (1 - settings.sales_tax)
+    return out
+
+
+class BuyBody(BaseModel):
+    item: str
+    qty: int
+    unit_price: float
+    via_order: bool = False
+
+
+class SellBody(BaseModel):
+    item: str
+    qty: int
+    unit_price: float
+    to_buy_order: bool = False
+
+
+class HaulCostBody(BaseModel):
+    total_cost: float
+
+
+@app.post("/api/actions/buy")
+async def action_buy(body: BuyBody) -> dict[str, Any]:
+    async with Database(settings.database_url) as db:
+        type_id = await _type_id_for(db, body.item)
+        lot_id = await Ledger(db).record_purchase(
+            type_id,
+            body.qty,
+            body.unit_price,
+            broker_fee=settings.broker_fee if body.via_order else 0.0,
+            station_id=settings.source_station_id,
+        )
+        names = await db.type_names([type_id])
+    return {"lot_id": lot_id, "name": names.get(type_id, str(type_id))}
+
+
+@app.post("/api/actions/sell")
+async def action_sell(body: SellBody) -> dict[str, Any]:
+    async with Database(settings.database_url) as db:
+        type_id = await _type_id_for(db, body.item)
+        try:
+            result = await Ledger(db).record_sale(
+                type_id,
+                body.qty,
+                body.unit_price,
+                sales_tax=settings.sales_tax,
+                broker_fee=0.0 if body.to_buy_order else settings.broker_fee,
+                station_id=settings.dest_station_id or None,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    return result
+
+
+@app.post("/api/actions/haul-cost")
+async def action_haul_cost(body: HaulCostBody) -> dict[str, Any]:
+    async with Database(settings.database_url) as db:
+        ledger = Ledger(db)
+        open_lots = await ledger.open_lots()
+        if not open_lots:
+            raise HTTPException(400, "no open lots to charge")
+        lot_ids = [lot.id for lot in open_lots]
+        volumes = await db.type_volumes([lot.type_id for lot in open_lots])
+        allocation = await ledger.assign_haul_cost(lot_ids, body.total_cost, volumes)
+    return {"lots": len(allocation), "allocated": sum(allocation.values())}
 
 
 @app.exception_handler(Exception)

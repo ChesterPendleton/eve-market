@@ -102,6 +102,28 @@
   .muted { color: var(--text-3); }
   .copied { color: var(--good) !important; border-color: var(--good) !important; }
   .totals { padding: 10px 4px; font-size: 13px; color: var(--text-3); }
+  #overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none;
+    align-items: center; justify-content: center; z-index: 10;
+  }
+  #overlay .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 28px 36px; text-align: center; min-width: 380px;
+  }
+  #overlay .item-name { font-size: 18px; color: var(--text); margin-bottom: 4px; }
+  #overlay .price { font-size: 30px; color: var(--good); font-variant-numeric: tabular-nums; margin: 10px 0 2px; }
+  #overlay .hint { color: var(--text-3); font-size: 12px; margin-bottom: 16px; }
+  #overlay .card button { margin: 0 6px; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-top: 16px; }
+  .form-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .form-card h3 { margin: 0 0 10px; font-size: 14px; color: var(--text); font-weight: 600; }
+  .form-card .row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; flex-wrap: wrap; }
+  .form-card input[type=text], .form-card input[type=number] {
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 5px; padding: 6px 8px; font-size: 13px; flex: 1; min-width: 90px;
+  }
+  .form-card label.chk { font-size: 12px; color: var(--text-3); display: flex; gap: 5px; align-items: center; }
+  .pricebook { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 14px 0; }
   .totals b { color: var(--text); font-variant-numeric: tabular-nums; }
 </style>
 </head>
@@ -115,17 +137,32 @@
   <span class="spacer"></span>
   <button id="btn-refresh" class="primary" title="Snapshot Jita and the destination, then fetch history for both">Refresh market data</button>
   <button id="btn-sync" title="Import wallet transactions into the ledger">Sync wallet</button>
+  <label class="chip" title="Automatically re-snapshot both regions and refresh history">auto
+    <select id="autorefresh" style="background:none;border:none;color:var(--text);font-size:12px">
+      <option value="0">off</option><option value="15">15m</option>
+      <option value="30">30m</option><option value="60">60m</option>
+    </select>
+  </label>
   <button id="btn-login" style="display:none">Log in with EVE</button>
 </header>
 <nav id="tabs">
   <button data-tab="stock" class="active">Stock</button>
   <button data-tab="relist">Relist</button>
+  <button data-tab="price">Price &amp; record</button>
   <button data-tab="orders">My orders</button>
   <button data-tab="position">Position</button>
   <button data-tab="pnl">P&amp;L</button>
 </nav>
 <main id="main"></main>
 <div id="toast"></div>
+<div id="overlay"><div class="card">
+  <div class="item-name" id="walk-name"></div>
+  <div class="muted" id="walk-progress"></div>
+  <div class="price" id="walk-price"></div>
+  <div class="hint">copied — alt-tab to EVE and Ctrl+V</div>
+  <button class="primary" id="walk-next">Next</button>
+  <button id="walk-stop">Stop</button>
+</div></div>
 
 <script>
 "use strict";
@@ -356,6 +393,9 @@ const tabs = {
     }).join("") + `</div>`;
     const rows = data.rows || [];
     if (!rows.length) { h += `<div class="notice info">${esc(data.message || "no open orders")}</div>`; $("#main").innerHTML = h; return; }
+    const actionable = rows.filter(r => r.needs_action && r.suggested_price != null);
+    if (actionable.length) h += `<div class="filters"><button id="btn-walk" class="primary">Walk the worklist (${actionable.length})</button>
+      <span class="muted">copies each price${state.status.character ? " and opens its market window" : ""}, one order at a time</span></div>`;
     h += table("relist", [
       {key:"name", label:"Item", item:true, render: r => esc(r.name) + openBtn(r.type_id)},
       {key:"side", label:"Side", render: r => r.side},
@@ -372,6 +412,8 @@ const tabs = {
     const blocked = rows.filter(r => r.status === "below_floor").length;
     if (blocked) h += `<div class="notice">${blocked} order(s) undercut below your cost floor — matching would lose money. Hold, or sell into the buy orders.</div>`;
     $("#main").innerHTML = h;
+    const walkBtn = $("#btn-walk");
+    if (walkBtn) walkBtn.onclick = () => startWalk(actionable);
   },
 
   async orders() {
@@ -387,6 +429,102 @@ const tabs = {
     ], rows, {key:"price", dir:-1});
     if (!rows.length) h += `<div class="notice info">No open orders.</div>`;
     $("#main").innerHTML = h;
+  },
+
+  async price() {
+    const last = state.priceItem || "";
+    let h = `
+      <div class="filters">
+        <label>Item <input id="p-item" type="text" list="item-list" value="${esc(last)}" placeholder="start typing…" style="width:260px"></label>
+        <datalist id="item-list"></datalist>
+        <label><select id="p-side"><option value="sell">sell at destination</option><option value="buy">bid in Jita</option></select></label>
+        <button id="p-go" class="primary small">Price it</button>
+      </div>
+      <div id="p-result"></div>
+      <div class="form-grid">
+        <div class="form-card">
+          <h3>Record a purchase</h3>
+          <div class="row"><input id="b-item" type="text" list="item-list" placeholder="item"><input id="b-qty" type="number" placeholder="qty" style="max-width:90px"><input id="b-price" type="number" step="0.01" placeholder="unit price"></div>
+          <div class="row"><label class="chk"><input id="b-via" type="checkbox"> bought via my buy order (adds broker fee)</label>
+          <span class="spacer"></span><button id="b-go" class="small primary">Record buy</button></div>
+        </div>
+        <div class="form-card">
+          <h3>Record a sale</h3>
+          <div class="row"><input id="s-item" type="text" list="item-list" placeholder="item"><input id="s-qty" type="number" placeholder="qty" style="max-width:90px"><input id="s-price" type="number" step="0.01" placeholder="unit price"></div>
+          <div class="row"><label class="chk"><input id="s-buyorder" type="checkbox"> sold into a buy order (no broker fee)</label>
+          <span class="spacer"></span><button id="s-go" class="small primary">Record sale</button></div>
+        </div>
+        <div class="form-card">
+          <h3>Allocate a haul cost</h3>
+          <div class="row"><input id="h-cost" type="number" placeholder="total trip cost in ISK"><button id="h-go" class="small primary">Spread over open lots</button></div>
+          <div class="muted" style="font-size:12px">Split across open lots by m³ — volume is what filled the hold.</div>
+        </div>
+      </div>`;
+    $("#main").innerHTML = h;
+
+    const datalist = $("#item-list");
+    let debounce;
+    const hookSearch = el => el.addEventListener("input", () => {
+      clearTimeout(debounce);
+      debounce = setTimeout(async () => {
+        if (el.value.length < 2) return;
+        const d = await api("/api/items?q=" + encodeURIComponent(el.value));
+        datalist.innerHTML = d.rows.map(r => `<option value="${esc(r.name)}">`).join("");
+      }, 250);
+    });
+    ["#p-item", "#b-item", "#s-item"].forEach(sel => hookSearch($(sel)));
+
+    $("#p-go").onclick = async () => {
+      const item = $("#p-item").value.trim();
+      if (!item) return;
+      state.priceItem = item;
+      let d;
+      try { d = await api("/api/price?item=" + encodeURIComponent(item) + "&side=" + $("#p-side").value); }
+      catch (e) { $("#p-result").innerHTML = `<div class="notice">${esc(e.message)}</div>`; return; }
+      const b = d.book, g = d.guide;
+      let r = `<div class="pricebook">
+        <div class="tile"><div class="label">Jita lowest sell</div><div class="value">${isk(b.jita_sell.best_price)}</div><div class="label">${b.jita_sell.volume.toLocaleString()} units</div></div>
+        <div class="tile"><div class="label">Jita highest buy</div><div class="value">${isk(b.jita_buy.best_price)}</div><div class="label">${b.jita_buy.volume.toLocaleString()} units</div></div>
+        <div class="tile"><div class="label">Dest lowest sell</div><div class="value">${isk(b.dest_sell.best_price)}</div><div class="label">${b.dest_sell.order_count} asks</div></div>
+        <div class="tile"><div class="label">Dest highest buy</div><div class="value">${isk(b.dest_buy.best_price)}</div><div class="label">${b.dest_buy.order_count} bids</div></div>
+      </div>
+      <div class="pricebook">
+        <div class="tile"><div class="label">On hand</div><div class="value">${g.qty_on_hand.toLocaleString()}</div></div>
+        <div class="tile"><div class="label">Avg landed cost</div><div class="value">${isk(g.avg_landed_cost)}</div></div>
+        <div class="tile"><div class="label">Break-even</div><div class="value">${isk(g.break_even_price)}</div></div>
+        <div class="tile"><div class="label">Replacement</div><div class="value">${isk(g.replacement_price)}</div></div>
+        <div class="tile"><div class="label">Floor — never below</div><div class="value">${isk(g.floor_price)}</div></div>
+      </div>`;
+      if (d.target != null) {
+        r += `<div class="notice info"><b style="color:var(--text)">${esc(d.name)}</b> — ${$("#p-side").value === "buy" ? "bid to top the Jita book" : "list at"}:
+          <button data-copy="${Number(d.target).toFixed(2)}" style="font-size:16px;margin-left:8px">${isk(d.target)} ⧉</button>
+          ${d.nets_per_unit != null ? `<span class="muted" style="margin-left:10px">nets ${isk(d.nets_per_unit)} / unit after fees</span>` : ""}</div>`;
+      } else if ($("#p-side").value === "sell") {
+        r += `<div class="notice">Market is at ${isk(b.dest_sell.best_price)} but your floor is ${isk(g.floor_price)} — undercutting loses money. Hold, or sell into the buy orders${d.instant_net != null ? ` (nets ${isk(d.instant_net)}/unit)` : ""}.</div>`;
+      } else {
+        r += `<div class="notice">No buy orders in Jita to outbid.</div>`;
+      }
+      $("#p-result").innerHTML = r;
+    };
+
+    $("#b-go").onclick = async ev => {
+      try {
+        const d = await post("/api/actions/buy", {item: $("#b-item").value.trim(), qty: +$("#b-qty").value, unit_price: +$("#b-price").value, via_order: $("#b-via").checked});
+        toast(`lot ${d.lot_id}: ${$("#b-qty").value} × ${d.name} recorded — allocate the haul cost after the trip`);
+      } catch (e) { toast(e.message, 6000); }
+    };
+    $("#s-go").onclick = async ev => {
+      try {
+        const d = await post("/api/actions/sell", {item: $("#s-item").value.trim(), qty: +$("#s-qty").value, unit_price: +$("#s-price").value, to_buy_order: $("#s-buyorder").checked});
+        toast(`sale recorded: ${isk(d.gross)} gross → ${isk(d.profit)} profit (${(d.margin*100).toFixed(1)}%)`, 7000);
+      } catch (e) { toast(e.message, 6000); }
+    };
+    $("#h-go").onclick = async () => {
+      try {
+        const d = await post("/api/actions/haul-cost", {total_cost: +$("#h-cost").value});
+        toast(`${isk(+$("#h-cost").value, 0)} ISK spread across ${d.lots} open lot(s) by m³`);
+      } catch (e) { toast(e.message, 6000); }
+    };
   },
 
   async position() {
@@ -459,10 +597,47 @@ $("#btn-login").onclick = async () => {
   catch (e) { toast(e.message, 8000); }
 };
 
+// ---- relist walk ----------------------------------------------------------
+let walkList = [], walkIdx = 0;
+async function walkShow() {
+  const r = walkList[walkIdx];
+  $("#walk-name").textContent = r.name + " (" + r.side + ")";
+  $("#walk-progress").textContent = `${walkIdx + 1} of ${walkList.length} — ${iskShort(r.at_stake)} ISK at stake`;
+  const price = Number(r.suggested_price).toFixed(2);
+  $("#walk-price").textContent = isk(r.suggested_price);
+  await copyText(price);
+  if (state.status.character) {
+    try { await post("/api/actions/open-window", {type_id: r.type_id}); } catch {}
+  }
+}
+function startWalk(list) {
+  walkList = list; walkIdx = 0;
+  $("#overlay").style.display = "flex";
+  walkShow();
+}
+function stopWalk() { $("#overlay").style.display = "none"; render(); }
+$("#walk-next").onclick = () => { walkIdx++; if (walkIdx >= walkList.length) stopWalk(); else walkShow(); };
+$("#walk-stop").onclick = stopWalk;
+document.addEventListener("keydown", ev => {
+  if ($("#overlay").style.display !== "flex") return;
+  if (ev.key === "Enter") $("#walk-next").click();
+  if (ev.key === "Escape") stopWalk();
+});
+
+// ---- auto-refresh ----------------------------------------------------------
+$("#autorefresh").onchange = async ev => {
+  try {
+    await post("/api/actions/autorefresh", {minutes: +ev.target.value});
+    toast(+ev.target.value ? `auto-refresh every ${ev.target.value} minutes while the dashboard is running` : "auto-refresh off");
+    pollJob();
+  } catch (e) { toast(e.message); }
+};
+
 // ---- boot -----------------------------------------------------------------
 (async () => {
   await loadStatus();
   const s = state.status;
+  if (s.autorefresh_minutes != null) $("#autorefresh").value = String(s.autorefresh_minutes);
   if (s.dest && !s.dest.resolved) {
     toast("Destination system id is unresolved — run `eve-market resolve " + s.dest.name + "` and update .env", 8000);
   }
