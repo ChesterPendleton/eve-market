@@ -37,7 +37,7 @@ step "Installing dependencies"
 # shellcheck disable=SC1091
 source .venv/bin/activate
 python -m pip install --quiet --upgrade pip
-python -m pip install --quiet -e ".[dev]"
+python -m pip install --quiet -e ".[dev,ui]"
 green "installed into .venv"
 
 # --- 3. .env ---------------------------------------------------------------
@@ -110,51 +110,14 @@ fi
 # --- 7. Static Data Export -------------------------------------------------
 # The SDE gives us item names and packaged volumes. Without it everything
 # still works, but items show as numeric type ids and hauling can't compute
-# ISK/m3. Fuzzwork's CSV dump is far smaller than the full official SDE.
+# ISK/m3. Fuzzwork stopped publishing per-table CSVs, so `fetch-sde` streams
+# its whole-database SQLite dump and reads the one table we need.
 if [[ "$SKIP_SDE" == "0" ]]; then
   step "Loading static data (item names and volumes)"
-  mkdir -p data
-  if [[ ! -f data/invTypes.csv ]]; then
-    if curl -fsSL --max-time 300 \
-        "https://www.fuzzwork.co.uk/dump/latest/invTypes.csv" \
-        -o data/invTypes.csv; then
-      green "downloaded invTypes.csv"
-    else
-      yellow "download failed — skipping. Re-run setup.sh later, or use --no-sde."
-    fi
-  fi
-  if [[ -f data/invTypes.csv ]]; then
-    python - <<'PY'
-import csv, json, pathlib
-
-src = pathlib.Path("data/invTypes.csv")
-rows = []
-with src.open(newline="", encoding="utf-8") as fh:
-    for r in csv.DictReader(fh):
-        def num(key):
-            v = (r.get(key) or "").strip()
-            if v in ("", "None", "NULL"):
-                return None
-            try:
-                return float(v)
-            except ValueError:
-                return None
-        try:
-            type_id = int(r["typeID"])
-        except (KeyError, ValueError):
-            continue
-        rows.append({
-            "type_id": type_id,
-            "type_name": r.get("typeName") or str(type_id),
-            "group_id": int(r["groupID"]) if (r.get("groupID") or "").isdigit() else None,
-            "volume": num("volume"),
-            "packaged_volume": num("packagedVolume") or num("volume"),
-            "published": (r.get("published") or "1").strip() in ("1", "True", "true"),
-        })
-pathlib.Path("data/types.json").write_text(json.dumps(rows))
-print(f"prepared {len(rows):,} types")
-PY
-    eve-market load-sde data/types.json || yellow "load-sde failed (is Postgres up?)"
+  if eve-market fetch-sde; then
+    green "static data loaded"
+  else
+    yellow "fetch-sde failed — re-run 'eve-market fetch-sde' later (is Postgres up?)"
   fi
 fi
 

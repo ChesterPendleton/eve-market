@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eve-market</title>
+<style>
+  :root {
+    --bg: #121211;
+    --surface: #1a1a19;
+    --surface-2: #222221;
+    --border: #32322f;
+    --text: #ffffff;
+    --text-2: #c3c2b7;
+    --text-3: #8a897f;
+    --accent: #3987e5;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text-2);
+    font: 14px/1.45 system-ui, "Segoe UI", sans-serif;
+  }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 10px 20px; background: var(--surface); border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 16px; color: var(--text); margin: 0; font-weight: 600; }
+  header .sub { color: var(--text-3); font-size: 12px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 10px; border-radius: 999px; font-size: 12px;
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--text-2);
+  }
+  .chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .spacer { flex: 1; }
+  button {
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.small { padding: 2px 8px; font-size: 12px; }
+  nav { display: flex; gap: 2px; padding: 0 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  nav button {
+    background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0;
+    color: var(--text-3); padding: 10px 14px; font-size: 13px;
+  }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+  main { padding: 16px 20px 60px; max-width: 1500px; margin: 0 auto; }
+  .filters {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    padding: 10px 0 14px; font-size: 13px; color: var(--text-3);
+  }
+  .filters label { display: inline-flex; gap: 6px; align-items: center; }
+  .filters input[type=number], .filters select {
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 5px; padding: 4px 8px; width: 90px; font-size: 13px;
+  }
+  .filters select { width: auto; }
+  table { border-collapse: collapse; width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-3); font-size: 12px; font-weight: 500; cursor: pointer; user-select: none; white-space: nowrap; background: var(--surface); position: sticky; top: 0; }
+  th.num, td.num { text-align: right; }
+  tbody tr:hover { background: var(--surface-2); }
+  td { color: var(--text-2); }
+  td.item { color: var(--text); }
+  .status { font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .tiles { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 18px; min-width: 160px;
+  }
+  .tile .label { font-size: 12px; color: var(--text-3); }
+  .tile .value { font-size: 22px; color: var(--text); font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .value.pos { color: var(--good); }
+  .tile .value.neg { color: var(--critical); }
+  .notice {
+    background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--warning);
+    border-radius: 6px; padding: 12px 16px; margin: 10px 0; color: var(--text-2);
+  }
+  .notice.info { border-left-color: var(--accent); }
+  #toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 10px 18px; font-size: 13px; display: none; max-width: 80%;
+    box-shadow: 0 4px 24px rgba(0,0,0,.5);
+  }
+  #jobline { font-size: 12px; color: var(--text-3); }
+  #jobline .spin {
+    display: inline-block; width: 10px; height: 10px; border: 2px solid var(--accent);
+    border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite;
+    margin-right: 6px; vertical-align: -1px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .muted { color: var(--text-3); }
+  .copied { color: var(--good) !important; border-color: var(--good) !important; }
+  .totals { padding: 10px 4px; font-size: 13px; color: var(--text-3); }
+  .totals b { color: var(--text); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<header>
+  <h1>eve-market</h1>
+  <span class="sub" id="destsub"></span>
+  <span class="chip" id="char-chip"><span class="dot" style="background:var(--text-3)"></span><span>checking…</span></span>
+  <span class="chip" id="data-chip" title=""><span class="dot" style="background:var(--text-3)"></span><span>data</span></span>
+  <span id="jobline"></span>
+  <span class="spacer"></span>
+  <button id="btn-refresh" class="primary" title="Snapshot Jita and the destination, then fetch history for both">Refresh market data</button>
+  <button id="btn-sync" title="Import wallet transactions into the ledger">Sync wallet</button>
+  <button id="btn-login" style="display:none">Log in with EVE</button>
+</header>
+<nav id="tabs">
+  <button data-tab="stock" class="active">Stock</button>
+  <button data-tab="relist">Relist</button>
+  <button data-tab="orders">My orders</button>
+  <button data-tab="position">Position</button>
+  <button data-tab="pnl">P&amp;L</button>
+</nav>
+<main id="main"></main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (s, el=document) => el.querySelector(s);
+const state = { tab: "stock", status: null, sort: {}, filters: {
+  ship: "", min_margin: 0.10, min_volume: 20, buy_orders: false, undersupplied: false, fit: true,
+}};
+
+// ---- formatting -----------------------------------------------------------
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function isk(n, dec=2) {
+  if (n == null || isNaN(n)) return "—";
+  return Number(n).toLocaleString("en-US", {minimumFractionDigits: dec, maximumFractionDigits: dec});
+}
+function iskShort(n) {
+  if (n == null || isNaN(n)) return "—";
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n/1e9).toFixed(2) + "b";
+  if (a >= 1e6) return (n/1e6).toFixed(2) + "m";
+  if (a >= 1e3) return (n/1e3).toFixed(1) + "k";
+  return n.toFixed(0);
+}
+function pct(n) { return n == null ? "—" : (n*100).toFixed(1) + "%"; }
+function age(min) {
+  if (min == null) return "never";
+  if (min < 60) return min + "m ago";
+  if (min < 2880) return Math.round(min/60) + "h ago";
+  return Math.round(min/1440) + "d ago";
+}
+
+// ---- plumbing -------------------------------------------------------------
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  let body = null;
+  try { body = await r.json(); } catch {}
+  if (!r.ok) throw new Error((body && (body.detail || body.error)) || r.statusText);
+  return body;
+}
+const post = (path, data) => api(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data || {})});
+
+let toastTimer;
+function toast(msg, ms=4000) {
+  const t = $("#toast");
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", ms);
+}
+async function copyText(text, btn) {
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch { try { ok = (await post("/api/actions/copy", {text})).copied; } catch {} }
+  if (btn && ok) { btn.classList.add("copied"); setTimeout(() => btn.classList.remove("copied"), 1200); }
+  if (!ok) toast("could not copy — select and copy manually");
+  return ok;
+}
+
+// ---- jobs -----------------------------------------------------------------
+let jobQueue = [], jobPolling = false;
+async function runJobs(list) {
+  jobQueue = list.slice();
+  nextJob();
+}
+async function nextJob() {
+  if (!jobQueue.length) { await loadStatus(); render(); return; }
+  const [path, body, label] = jobQueue.shift();
+  try { await post(path, body); } catch (e) { toast(label + ": " + e.message, 6000); jobQueue = []; await loadStatus(); render(); return; }
+  pollJob();
+}
+async function pollJob() {
+  if (jobPolling) return; jobPolling = true;
+  const line = $("#jobline");
+  for (;;) {
+    let j;
+    try { j = await api("/api/job"); } catch { break; }
+    if (j.running) {
+      line.innerHTML = '<span class="spin"></span>' + esc(j.name) + "…";
+      await new Promise(r => setTimeout(r, 1500));
+      continue;
+    }
+    line.textContent = "";
+    if (j.state === "done") toast(j.name + ": " + j.detail, 5000);
+    if (j.state === "error") { toast(j.name + " failed: " + j.detail, 8000); jobQueue = []; }
+    break;
+  }
+  jobPolling = false;
+  nextJob();
+}
+
+// ---- header ---------------------------------------------------------------
+async function loadStatus() {
+  try { state.status = await api("/api/status"); } catch (e) { state.status = {error: e.message}; }
+  const s = state.status;
+  const destName = s.dest ? s.dest.name : "?";
+  $("#destsub").textContent = s.dest ? `Jita → ${destName}` + (s.esi_live ? "" : " · offline fixtures") : "";
+  const cc = $("#char-chip");
+  if (s.character) cc.innerHTML = `<span class="dot" style="background:var(--good)"></span><span>${esc(s.character)}</span>`;
+  else cc.innerHTML = `<span class="dot" style="background:var(--text-3)"></span><span>not logged in</span>`;
+  $("#btn-login").style.display = s.character ? "none" : "";
+  const snaps = s.snapshots || [];
+  const dc = $("#data-chip");
+  if (!s.db_ok) dc.innerHTML = `<span class="dot" style="background:var(--critical)"></span><span>database down</span>`;
+  else if (!snaps.length) dc.innerHTML = `<span class="dot" style="background:var(--warning)"></span><span>no snapshots yet</span>`;
+  else {
+    const oldest = Math.max(...snaps.map(x => x.age_minutes));
+    const col = oldest > 240 ? "var(--warning)" : "var(--good)";
+    dc.innerHTML = `<span class="dot" style="background:${col}"></span><span>snapshots ${age(oldest)}</span>`;
+    dc.title = snaps.map(x => `${x.region}: ${x.orders.toLocaleString()} orders, ${age(x.age_minutes)}`).join("\n");
+  }
+}
+
+// ---- tables ---------------------------------------------------------------
+function sortRows(rows, key, dir) {
+  return rows.slice().sort((a, b) => {
+    const va = a[key], vb = b[key];
+    if (va == null) return 1; if (vb == null) return -1;
+    if (typeof va === "string") return dir * va.localeCompare(vb);
+    return dir * (va - vb);
+  });
+}
+function table(id, cols, rows, defaultSort) {
+  const sort = state.sort[id] || defaultSort;
+  state.sort[id] = sort;
+  if (sort) rows = sortRows(rows, sort.key, sort.dir);
+  let h = "<table><thead><tr>";
+  for (const c of cols) {
+    const arrow = sort && sort.key === c.key ? (sort.dir < 0 ? " ↓" : " ↑") : "";
+    h += `<th class="${c.num ? "num" : ""}" data-sort="${c.key}" data-table="${id}">${c.label}${arrow}</th>`;
+  }
+  h += "</tr></thead><tbody>";
+  for (const r of rows) {
+    h += "<tr>";
+    for (const c of cols) h += `<td class="${c.num ? "num" : ""}${c.item ? " item" : ""}">${c.render(r)}</td>`;
+    h += "</tr>";
+  }
+  h += "</tbody></table>";
+  return h;
+}
+function copyBtn(value) {
+  if (value == null) return "—";
+  const v = Number(value).toFixed(2);
+  return `<button class="small" data-copy="${v}" title="Copy ${v} to clipboard">${isk(value)} ⧉</button>`;
+}
+function openBtn(typeId) {
+  if (!state.status || !state.status.character) return "";
+  return ` <button class="small" data-open="${typeId}" title="Open the market window in your EVE client">↗</button>`;
+}
+const statusDot = {
+  best: ["var(--good)", "best"], alone: ["var(--accent)", "no rivals"],
+  undercut: ["var(--critical)", "undercut"], outbid: ["var(--critical)", "outbid"],
+  below_floor: ["var(--warning)", "below floor"],
+};
+
+// ---- tabs -----------------------------------------------------------------
+const tabs = {
+  async stock() {
+    const f = state.filters;
+    const q = new URLSearchParams({
+      min_margin: f.min_margin, min_volume: f.min_volume,
+      buy_orders: f.buy_orders, undersupplied: f.undersupplied, fit: f.fit,
+    });
+    if (f.ship) q.set("ship", f.ship);
+    const data = await api("/api/stock?" + q);
+    let h = `
+      <div class="filters">
+        <label>Ship <select id="f-ship">
+          <option value="">default (${esc(state.status.ship)})</option>
+          ${state.status.ships.map(s => `<option ${f.ship===s?"selected":""}>${s}</option>`).join("")}
+        </select></label>
+        <label>Min margin <input id="f-margin" type="number" step="0.01" value="${f.min_margin}"></label>
+        <label>Min Jita vol/day <input id="f-volume" type="number" value="${f.min_volume}"></label>
+        <label><input id="f-buyorders" type="checkbox" ${f.buy_orders?"checked":""}> buy via buy orders</label>
+        <label><input id="f-under" type="checkbox" ${f.undersupplied?"checked":""}> undersupplied only</label>
+        <label><input id="f-fit" type="checkbox" ${f.fit?"checked":""}> fit to one trip</label>
+        <button id="f-apply" class="primary small">Apply</button>
+        <span class="spacer"></span>
+        <button id="btn-buylist" class="small" title="Copy a Multibuy list of every quantity below">Copy buy list</button>
+      </div>`;
+    if (data.error) {
+      h += `<div class="notice">${esc(data.error)}${data.hint ? "<br><span class='muted'>" + esc(data.hint) + "</span>" : ""}</div>`;
+      $("#main").innerHTML = h; return;
+    }
+    if (data.warning) h += `<div class="notice">${esc(data.warning)}</div>`;
+    const p = data.profile;
+    h += `<div class="totals">${esc(p.ship)} · ${isk(p.capacity_m3,0)} m³ · risk ${pct(p.risk_pct)} —
+      est. profit <b>${iskShort(data.totals.profit)}</b> ISK on <b>${iskShort(data.totals.spend)}</b> spend, ${isk(data.totals.m3,0)} m³ used</div>`;
+    h += table("stock", [
+      {key:"name", label:"Item", item:true, render: r => esc(r.name) + openBtn(r.type_id)},
+      {key:"acquire_price", label:"Jita", num:true, render: r => isk(r.acquire_price)},
+      {key:"landed_cost", label:"Landed", num:true, render: r => isk(r.landed_cost)},
+      {key:"list_price", label:"List at", num:true, render: r => copyBtn(r.list_price)},
+      {key:"profit_per_unit", label:"Profit/u", num:true, render: r => isk(r.profit_per_unit)},
+      {key:"margin", label:"Margin", num:true, render: r => pct(r.margin)},
+      {key:"profit_per_m3", label:"ISK/m³", num:true, render: r => r.profit_per_m3 ? isk(r.profit_per_m3,0) : "n/a"},
+      {key:"suggested_qty", label:"Qty", num:true, render: r => r.suggested_qty.toLocaleString()},
+      {key:"total_profit", label:"Total", num:true, render: r => iskShort(r.total_profit)},
+      {key:"demand_ratio", label:"Demand", render: r => r.no_competition
+        ? `<span class="status"><span class="dot" style="background:var(--good)"></span>no sellers — you set the price</span>`
+        : `${r.dest_buy.order_count} bids / ${r.dest_sell.order_count} asks`},
+    ], data.rows, {key:"profit_per_m3", dir:-1});
+    if (!data.rows.length) h += `<div class="notice info">Nothing cleared the filters. Try a lower minimum margin, or tick “buy via buy orders”.</div>`;
+    $("#main").innerHTML = h;
+    $("#f-apply").onclick = () => {
+      Object.assign(state.filters, {
+        ship: $("#f-ship").value, min_margin: +$("#f-margin").value || 0,
+        min_volume: +$("#f-volume").value || 0, buy_orders: $("#f-buyorders").checked,
+        undersupplied: $("#f-under").checked, fit: $("#f-fit").checked,
+      });
+      render();
+    };
+    $("#btn-buylist").onclick = async ev => {
+      const d = await api("/api/buy-list?min_margin=" + state.filters.min_margin);
+      if (d.text) { await copyText(d.text, ev.target); toast(`Multibuy list for ${d.count} items copied — paste into the Multibuy window in Jita`); }
+      else toast(d.error || "nothing to buy");
+    };
+  },
+
+  async relist() {
+    const data = await api("/api/relist");
+    if (data.error === "not_logged_in") {
+      $("#main").innerHTML = `<div class="notice info">Log in with EVE (top right) to see your orders and what needs relisting.</div>`;
+      return;
+    }
+    let h = "";
+    if (data.error) { $("#main").innerHTML = `<div class="notice">${esc(data.error)}${data.hint ? "<br><span class='muted'>" + esc(data.hint) + "</span>" : ""}</div>`; return; }
+    const counts = data.counts || {};
+    h += `<div class="tiles">` + Object.entries(counts).map(([k,v]) => {
+      const [col, label] = statusDot[k] || ["var(--text-3)", k];
+      return `<div class="tile"><div class="label"><span class="status"><span class="dot" style="background:${col}"></span>${label}</span></div><div class="value">${v}</div></div>`;
+    }).join("") + `</div>`;
+    const rows = data.rows || [];
+    if (!rows.length) { h += `<div class="notice info">${esc(data.message || "no open orders")}</div>`; $("#main").innerHTML = h; return; }
+    h += table("relist", [
+      {key:"name", label:"Item", item:true, render: r => esc(r.name) + openBtn(r.type_id)},
+      {key:"side", label:"Side", render: r => r.side},
+      {key:"status", label:"Status", render: r => {
+        const [col, label] = statusDot[r.status] || ["var(--text-3)", r.status];
+        return `<span class="status"><span class="dot" style="background:${col}"></span>${label}</span>`;
+      }},
+      {key:"my_price", label:"Yours", num:true, render: r => isk(r.my_price)},
+      {key:"best_competing", label:"Best rival", num:true, render: r => isk(r.best_competing)},
+      {key:"suggested_price", label:"Relist at", num:true, render: r => r.needs_action ? copyBtn(r.suggested_price) : "—"},
+      {key:"remaining", label:"Units", num:true, render: r => r.remaining.toLocaleString()},
+      {key:"at_stake", label:"At stake", num:true, render: r => iskShort(r.at_stake)},
+    ], rows, {key:"at_stake", dir:-1});
+    const blocked = rows.filter(r => r.status === "below_floor").length;
+    if (blocked) h += `<div class="notice">${blocked} order(s) undercut below your cost floor — matching would lose money. Hold, or sell into the buy orders.</div>`;
+    $("#main").innerHTML = h;
+  },
+
+  async orders() {
+    const data = await api("/api/orders");
+    if (data.error === "not_logged_in") { $("#main").innerHTML = `<div class="notice info">Log in with EVE (top right) to see your live orders.</div>`; return; }
+    const rows = data.rows || [];
+    let h = table("orders", [
+      {key:"name", label:"Item", item:true, render: r => esc(r.name) + openBtn(r.type_id)},
+      {key:"is_buy_order", label:"Side", render: r => r.is_buy_order ? "buy" : "sell"},
+      {key:"price", label:"Price", num:true, render: r => isk(r.price)},
+      {key:"volume_remain", label:"Remaining", num:true, render: r => `${r.volume_remain.toLocaleString()}/${r.volume_total.toLocaleString()}`},
+      {key:"location_id", label:"Location", render: r => r.location_id},
+    ], rows, {key:"price", dir:-1});
+    if (!rows.length) h += `<div class="notice info">No open orders.</div>`;
+    $("#main").innerHTML = h;
+  },
+
+  async position() {
+    const data = await api("/api/positions");
+    const rows = data.rows || [];
+    let h = `<div class="tiles"><div class="tile"><div class="label">Capital tied up</div><div class="value">${iskShort(data.total_capital)} ISK</div></div>
+      <div class="tile"><div class="label">Items held</div><div class="value">${rows.length}</div></div></div>`;
+    h += table("position", [
+      {key:"name", label:"Item", item:true, render: r => esc(r.name)},
+      {key:"qty_on_hand", label:"On hand", num:true, render: r => r.qty_on_hand.toLocaleString()},
+      {key:"avg_landed_cost", label:"Avg landed", num:true, render: r => isk(r.avg_landed_cost)},
+      {key:"capital_tied_up", label:"Capital", num:true, render: r => iskShort(r.capital_tied_up)},
+    ], rows, {key:"capital_tied_up", dir:-1});
+    if (!rows.length) h += `<div class="notice info">No stock on the books yet. Record purchases with <code>eve-market buy</code> or run Sync wallet after trading.</div>`;
+    $("#main").innerHTML = h;
+  },
+
+  async pnl() {
+    const d = await api("/api/pnl");
+    const profCls = d.profit > 0 ? "pos" : d.profit < 0 ? "neg" : "";
+    $("#main").innerHTML = `<div class="tiles">
+      <div class="tile"><div class="label">Realised profit</div><div class="value ${profCls}">${iskShort(d.profit)} ISK</div></div>
+      <div class="tile"><div class="label">Gross sales</div><div class="value">${iskShort(d.gross)} ISK</div></div>
+      <div class="tile"><div class="label">Cost of goods</div><div class="value">${iskShort(d.cogs)} ISK</div></div>
+      <div class="tile"><div class="label">Fees paid</div><div class="value">${iskShort(d.fees)} ISK</div></div>
+      <div class="tile"><div class="label">Sales recorded</div><div class="value">${d.sales}</div></div>
+    </div>
+    <div class="notice info">Numbers come from the ledger: purchases and sales recorded by hand or imported by Sync wallet, with haul costs allocated by m³.</div>`;
+  },
+};
+
+async function render() {
+  try { await tabs[state.tab](); }
+  catch (e) { $("#main").innerHTML = `<div class="notice">${esc(e.message)}</div>`; }
+}
+
+// ---- events ---------------------------------------------------------------
+document.addEventListener("click", async ev => {
+  const t = ev.target;
+  if (t.dataset.copy) copyText(t.dataset.copy, t);
+  if (t.dataset.open) {
+    try { await post("/api/actions/open-window", {type_id: +t.dataset.open}); toast("market window opened in the EVE client"); }
+    catch (e) { toast("could not open window: " + e.message); }
+  }
+  if (t.dataset.sort) {
+    const id = t.dataset.table, key = t.dataset.sort, cur = state.sort[id];
+    state.sort[id] = {key, dir: cur && cur.key === key ? -cur.dir : -1};
+    render();
+  }
+  if (t.dataset.tab) {
+    state.tab = t.dataset.tab;
+    document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b === t));
+    render();
+  }
+});
+$("#btn-refresh").onclick = () => {
+  const s = state.status;
+  const destRegion = s && s.dest ? String(s.dest.region_id) : "genesis";
+  toast("refreshing: snapshots then history for both regions — the Jita book takes a minute");
+  runJobs([
+    ["/api/actions/snapshot", {region: "the_forge"}, "snapshot Jita"],
+    ["/api/actions/snapshot", {region: destRegion}, "snapshot destination"],
+    ["/api/actions/fetch-history", {region: "the_forge"}, "history Jita"],
+    ["/api/actions/fetch-history", {region: destRegion}, "history destination"],
+  ]);
+};
+$("#btn-sync").onclick = () => runJobs([["/api/actions/sync", {}, "sync"]]);
+$("#btn-login").onclick = async () => {
+  try { await post("/api/actions/login"); toast("check your browser — EVE SSO is opening"); pollJob(); }
+  catch (e) { toast(e.message, 8000); }
+};
+
+// ---- boot -----------------------------------------------------------------
+(async () => {
+  await loadStatus();
+  const s = state.status;
+  if (s.dest && !s.dest.resolved) {
+    toast("Destination system id is unresolved — run `eve-market resolve " + s.dest.name + "` and update .env", 8000);
+  }
+  render();
+  pollJob(); // pick up any job left running from a previous page load
+})();
+</script>
+</body>
+</html>

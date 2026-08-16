@@ -37,12 +37,39 @@ violation, and it isn't needed for this workflow.
 
 ---
 
+## The dashboard
+
+Everything below is also available as a local web dashboard:
+
+```bash
+pip install -e ".[ui]"
+eve-market ui
+```
+
+That serves the stock screen, relist worklist, your live orders, position and
+P&L at `http://127.0.0.1:8877` and opens it in your browser. Every price has a
+copy button, every item can open its market window in the running client, and
+one **Refresh market data** button chains the snapshots and history fetches.
+
+It is the same analysis and ledger code as the CLI with buttons on top, and it
+binds 127.0.0.1 only — tokens and ledger never leave your machine. On Windows,
+Edge/Chrome "Install as app" turns the tab into a desktop app with its own icon.
+
+---
+
 ## Setup on your PC
 
 ```bash
-./setup.sh
+./setup.sh                 # macOS / Linux
 source .venv/bin/activate
 eve-market doctor
+```
+
+On Windows (no Docker or WSL needed — PostgreSQL installs natively and the
+Redis cache is optional):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-windows.ps1
 ```
 
 Then confirm the destination — **do this before trusting any number**:
@@ -272,6 +299,8 @@ replaced by `_`: `/v1/markets/10000002/orders/` →
 | Command | Purpose |
 | --- | --- |
 | `doctor` | Check ESI, Redis, Postgres, config |
+| `ui` | **Local web dashboard** for everything below |
+| `fetch-sde` | Download and load item names and volumes |
 | `login` / `whoami` | Connect your character via SSO |
 | `orders` | Your live market orders |
 | `relist` | **Undercut worklist** with the price to fix each |
@@ -353,3 +382,4 @@ are expected.
   how long stock actually takes to clear at a given price. Right now
   `--days-of-stock` is your estimate; that endpoint would make it measured.
 - **Corporation wallets**, if you ever run this out of a corp.
+- **Dashboard extras** — history charts and a session log for the relist walk.

@@ -274,6 +274,80 @@ def load_sde(path: Path = typer.Argument(..., help="JSON array of type rows")) -
     asyncio.run(run())
 
 
+
+@app.command("fetch-sde")
+def fetch_sde(
+    keep: bool = typer.Option(False, help="Keep the downloaded SDE file afterwards"),
+) -> None:
+    """Download the SDE and load item names and cargo volumes in one step.
+
+    Streams Fuzzwork's SQLite dump (~150MB compressed), reads the invTypes
+    table, and loads it into Postgres. Without this data items show as numeric
+    type ids and hauling cannot rank by ISK/m3.
+    """
+    from . import sde
+
+    data_dir = Path("data")
+    data_dir.mkdir(exist_ok=True)
+    db_path = data_dir / "sde.sqlite"
+
+    if db_path.exists():
+        console.print(f"[dim]{db_path} already present, reusing it[/]")
+    else:
+        console.print(f"downloading {sde.SDE_URL}")
+        with console.status("starting...") as status:
+            sde.download_sde(
+                db_path,
+                progress=lambda n: status.update(f"{n / 1048576:,.0f} MB downloaded"),
+            )
+
+    rows = sde.types_from_sqlite(db_path)
+    console.print(f"parsed {len(rows):,} types")
+
+    async def run() -> None:
+        async with Database(settings.database_url) as db:
+            written = await db.upsert_types(rows)
+        console.print(f"[green]loaded[/] {written:,} types")
+
+    asyncio.run(run())
+
+    if not keep:
+        # ~500MB that has served its purpose; Postgres has the rows now.
+        db_path.unlink(missing_ok=True)
+        console.print("[dim]removed the temporary SDE file (use --keep to retain it)[/]")
+
+
+
+@app.command()
+def ui(
+    port: int = typer.Option(8877, help="Port to serve the dashboard on"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open a browser"),
+) -> None:
+    """Serve the local web dashboard and open it in your browser.
+
+    Everything runs on this machine — the server binds 127.0.0.1 only, and
+    your tokens and ledger stay local. Requires the ui extra:
+    pip install -e ".[ui]"
+    """
+    try:
+        import uvicorn
+    except ImportError as exc:
+        console.print(
+            "[red]the dashboard needs fastapi and uvicorn[/] — install them with:\n"
+            '  pip install -e ".[ui]"'
+        )
+        raise typer.Exit(1) from exc
+
+    url = f"http://127.0.0.1:{port}"
+    if not no_browser:
+        import threading
+        import webbrowser
+
+        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+    console.print(f"[green]eve-market dashboard[/] on {url}  (Ctrl+C to stop)")
+    uvicorn.run("eve_market.webui:app", host="127.0.0.1", port=port, log_level="warning")
+
+
 # Trading and authenticated commands live in their own modules to keep this
 # one readable.
 from .cli_auth import register as _register_auth
