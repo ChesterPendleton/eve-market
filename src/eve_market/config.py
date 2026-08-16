@@ -12,6 +12,7 @@ REGIONS: dict[str, int] = {
     "sinq_laison": 10000032,  # Dodixie
     "heimatar": 10000030,  # Rens
     "metropolis": 10000042,  # Hek
+    "genesis": 10000067,  # Ahbazon — VERIFY with `eve-market resolve` before trusting
 }
 
 # Station IDs for the hub stations inside those regions.
@@ -60,6 +61,38 @@ class Settings(BaseSettings):
     sales_tax: float = 0.036
     # Base broker fee is 3%, reduced by Broker Relations and standings.
     broker_fee: float = 0.015
+
+    # --- Source and destination hubs ---------------------------------------
+    source_region_id: int = 10000002  # The Forge
+    source_station_id: int = 60003760  # Jita IV-4
+
+    # Destination: the market you're stocking. These default to Ahbazon, but
+    # the ids are NOT verified — run `eve-market resolve Ahbazon` on a
+    # networked machine and it will write the confirmed values into .env.
+    dest_name: str = "Ahbazon"
+    dest_region_id: int = 10000067  # Genesis — verify
+    dest_system_id: int = 0  # 0 means "not yet resolved"
+    dest_station_id: int = 0  # optional; 0 means "any station in the system"
+    # Set by `resolve` from the system's real security status. Drives the
+    # default risk model, so a wrong value here quietly distorts every margin.
+    dest_is_lowsec: bool = True
+
+    # --- Logistics ---------------------------------------------------------
+    ship: str = "dst"  # blockade_runner | dst | freighter
+    cargo_m3: float = 0.0  # 0 means "use the ship's default capacity"
+    self_hauling: bool = True
+    haul_cost_per_m3: float | None = None  # None means derive from the route
+    haul_risk_pct: float | None = None  # None means derive from ship and route
+
+    # --- Pricing behaviour -------------------------------------------------
+    # Standard undercut. EVE prices to 0.01 ISK.
+    undercut_isk: float = 0.01
+    # Markup used only when nobody else is selling and you set the price.
+    greenfield_markup: float = 0.35
+    # How many days of destination turnover to stock, and the share of that
+    # turnover you assume you win against other sellers.
+    days_of_stock: float = 7.0
+    capture_rate: float = 0.25
 
     @property
     def user_agent(self) -> str:

@@ -274,5 +274,11 @@ def load_sde(path: Path = typer.Argument(..., help="JSON array of type rows")) -
     asyncio.run(run())
 
 
+# Trading commands live in their own module to keep this one readable.
+from .cli_stock import register as _register_stock
+
+_register_stock(app)
+
+
 if __name__ == "__main__":
     app()

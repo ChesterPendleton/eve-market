@@ -18,8 +18,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime, parsedate_to_datetime
 from typing import Any, Self
 
 import httpx
@@ -36,6 +36,8 @@ ERROR_LIMIT_FLOOR = 10
 # Retry these transient statuses with exponential backoff.
 RETRY_STATUSES = {500, 502, 503, 504}
 MAX_RETRIES = 4
+# Fixtures expire fast so edits take effect without flushing Redis.
+FIXTURE_TTL_SECONDS = 30
 
 
 class EsiError(RuntimeError):
@@ -178,6 +180,23 @@ class EsiClient:
         await self._store(key, page)
         return page
 
+    async def post(self, path: str, payload: object) -> list[dict] | dict:
+        """POST and return the decoded body.
+
+        Only used for name resolution (``/universe/ids/``), which is a POST
+        because the name list travels in the body. Not cached — resolution runs
+        once during setup, and ETags don't apply to POST anyway.
+        """
+        await self._await_error_budget()
+        async with self._sem:
+            response = await self._client.post(
+                path, json=payload, params={"datasource": self.config.esi_datasource}
+            )
+        self._note_error_budget(response)
+        if response.status_code >= 400:
+            raise EsiError(response.status_code, path, response.text)
+        return response.json()
+
     async def _request(
         self, path: str, params: dict[str, Any], headers: dict[str, str]
     ) -> httpx.Response:
@@ -272,13 +291,21 @@ class FixtureTransport(httpx.AsyncBaseTransport):
         if not target.exists():
             return httpx.Response(404, json={"error": f"no fixture: {target.name}"})
         body = json.loads(target.read_text())
-        # Give fixtures a far-future expiry so cache logic behaves normally.
+        # Expire fixtures quickly. A far-future expiry would park them in Redis
+        # permanently, so editing a fixture would appear to do nothing while the
+        # stale copy kept being served — a genuinely confusing failure.
+        # The ETag includes the file's mtime so an edit invalidates the entry
+        # even inside the freshness window.
+        stamp = int(target.stat().st_mtime)
+        expires = format_datetime(
+            datetime.now(UTC) + timedelta(seconds=FIXTURE_TTL_SECONDS), usegmt=True
+        )
         return httpx.Response(
             200,
             json=body,
             headers={
-                "expires": "Wed, 21 Oct 2099 07:28:00 GMT",
-                "etag": f'"fixture-{target.stem}"',
+                "expires": expires,
+                "etag": f'"fixture-{target.stem}-{stamp}"',
                 "x-pages": "1",
             },
         )

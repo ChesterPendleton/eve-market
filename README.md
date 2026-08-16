@@ -1,120 +1,213 @@
 # eve-market
 
-Market and trading analysis for EVE Online, built on ESI.
+Market trading tooling for EVE Online, built around one job: **stocking a
+secondary market from Jita profitably.** Default destination is Ahbazon.
 
-Finds two things:
+It answers, in order:
 
-- **Station-trading spreads** — buy low on a buy order, sell high on a sell
-  order, at the same station.
-- **Cross-region hauls** — buy in one hub, move the goods, sell in another.
+1. What in Jita is liquid and worth the cargo space?
+2. Of those, what does the destination actually want — many buy orders, thin
+   or absent sell orders?
+3. What must I list at, and what does that net after fees and hauling?
+4. What did my stock cost me, and what's my real profit?
 
-Everything runs against **public** ESI endpoints, so no EVE login is needed to
-use it. SSO is only required if you later add character-owned orders or wallet
-history.
+It also does plain station trading in one hub (`spreads`) and generic
+region-to-region arbitrage (`haul`).
+
+---
+
+## What this tool does not do
+
+Worth being blunt up front, because it shapes everything:
+
+- **ESI cannot place, modify, or cancel market orders.** No endpoint exists —
+  CCP has never exposed order writes, specifically to prevent botting. So this
+  tool computes prices and hands them to your clipboard. You paste them.
+- **There is no supported way to drive the EVE client.** No IPC, no API into
+  the running game. The legitimate channels are the clipboard, Multibuy paste,
+  and the client's own market log export. All three are supported here.
+- **No input automation.** Injecting keystrokes or mouse events into the client
+  is an EULA violation and a ban. This tool never touches your input devices.
+
+Everything below keeps you as the one pressing the keys.
 
 ---
 
 ## Setup on your PC
 
 ```bash
-git clone <your-remote> eve-market
-cd eve-market
 ./setup.sh
+source .venv/bin/activate
+eve-market doctor
 ```
 
-`setup.sh` is idempotent — re-run it any time. It will:
-
-1. Check for Python 3.11+
-2. Create `.venv` and install the package
-3. Write `.env` and prompt for your contact email
-4. Check that ESI is reachable
-5. Start Postgres and Redis via `docker compose`
-6. Apply the database schema
-7. Download static data (item names, cargo volumes) and load it
-8. Run `eve-market doctor` to verify all of the above
-
-Pass `--no-sde` to skip the ~40 MB static data download. Without it the tool
-still works, but items display as numeric type ids and hauling can't rank by
-ISK/m³.
-
-### First run
+Then confirm the destination — **do this before trusting any number**:
 
 ```bash
-source .venv/bin/activate
-
-eve-market snapshot the_forge          # pull Jita's order book
-eve-market spreads the_forge           # rank station-trading spreads
-eve-market snapshot domain             # pull Amarr too
-eve-market haul the_forge domain       # find hauls between them
+eve-market resolve Ahbazon
 ```
 
-`snapshot` on a major region pulls 100k+ orders across a dozen-plus pages;
-expect it to take a minute the first time and to be near-instant afterwards
-while the cache is warm.
+That prints the real system id, region id and security status from ESI, plus
+the `.env` lines to paste. The shipped defaults are unverified guesses; if the
+region id is wrong you'll analyse an empty market and not notice.
+
+`resolve` also warns you if the system is lowsec, and if it has no NPC stations
+(meaning the market is a citadel — see *Citadel markets* below).
 
 ---
 
-## Offline mode
+## The trading loop
 
-Set `EVE_ESI_LIVE=false` and every ESI call is served from recorded JSON in
-`tests/fixtures/` instead of the network. The whole app — CLI included — runs
-with no internet access at all.
+```bash
+# 1. Pull both order books and their history
+eve-market snapshot the_forge
+eve-market snapshot genesis
+eve-market fetch-history the_forge
+eve-market fetch-history genesis
 
-This is how the project was built and tested, and it's useful for working on
-analysis logic without burning ESI's error budget. To record new fixtures,
-save a real response as `tests/fixtures/<path with / replaced by _>.json`, e.g.
-`/v1/markets/10000002/orders/` becomes `_v1_markets_10000002_orders_.json`.
+# 2. What should I stock?
+eve-market stock                      # ranked by ISK per m3
+eve-market stock --buy-orders         # price it as buying via buy orders
+eve-market stock --undersupplied      # only where demand outweighs supply
+eve-market stock --ship freighter     # see what lowsec risk does to margins
+eve-market stock --no-fit             # everything, not just one hold's worth
+
+# 3. Buy it
+eve-market buy-list                   # Multibuy list, copied to clipboard
+eve-market price "Warp Disruptor II" --side buy   # bid to top the Jita book
+
+# 4. Record what you paid
+eve-market buy "Warp Disruptor II" 500 1180000
+eve-market buy "Damage Control II" 300 498000 --via-order
+
+# 5. After the trip, load the freight cost in
+eve-market haul-cost 12000000         # split across lots by m3
+
+# 6. Price your listings
+eve-market price "Warp Disruptor II"  # floored at break-even AND restock cost
+
+# 7. Record sales and check the damage
+eve-market sell "Warp Disruptor II" 200 1949999.99
+eve-market sell "Warp Disruptor II" 100 1400000 --to-buy-order
+eve-market position
+eve-market pnl
+```
+
+### What `stock` shows
+
+```
+Item                  Jita        Landed      List at     Profit/u   Margin  ISK/m3   Demand
+Warp Disruptor II     1,180,000   1,191,800   1,949,999   658,749    55.3%   131,750  2 bids / 1 asks
+Damage Control II       498,000     502,980     672,300   135,032    26.8%    27,007  no sellers
+```
+
+**`no sellers`** is the flag to care about. Nobody is competing, so you set the
+price rather than undercutting one — that's the niche you're trying to fill.
+
+Ranking is by **ISK per m3**, not margin or total profit, because cargo space
+is what limits a run. `--no-fit` shows everything; by default the list is
+trimmed to what fits in one trip.
+
+---
+
+## Pricing: the three numbers
+
+`eve-market price` reports three prices, and the distinction is the whole point:
+
+| | Meaning |
+| --- | --- |
+| **Break-even** | Recovers what this stock actually cost, including its share of the haul. Sunk cost. |
+| **Replacement** | Recovers what it would cost to buy and haul it *again* at today's Jita price. |
+| **Floor** | The higher of the two. Never list below this. |
+
+Selling above break-even but below replacement feels profitable and quietly
+shrinks the business — every sale funds less stock than it consumed. That's
+what "build in restock costs" means, and it's enforced: if undercutting the
+market would drop you under the floor, the tool refuses to suggest a price and
+tells you to hold or sell into the buy orders instead.
+
+---
+
+## Hauling and risk
+
+Ahbazon is a lowsec chokepoint, so risk is priced as a share of cargo value:
+
+| Ship | Capacity | Lowsec risk charged |
+| --- | --- | --- |
+| Blockade Runner | 11,000 m³ | 1% |
+| Deep Space Transport | 62,000 m³ | 1% |
+| Freighter | 435,000 m³ | **15%** |
+
+That 15% is not decoration. On the numbers above it takes Damage Control II
+from a 26.8% margin to 11.4%. A freighter through a camped lowsec gate is
+bait, and the tool prices it that way rather than letting the margin look
+better than it is. Override with `EVE_HAUL_RISK_PCT` if you disagree.
+
+Haul costs are allocated across lots **by m³**, not by ISK value — volume is
+what filled the hold. Allocating by value would make cheap bulky goods look
+like they shipped for free.
+
+---
+
+## Two asymmetries the tool gets right
+
+**Buy orders are a demand signal, not your customers.** Someone with a buy
+order up wants the item *cheaper* than it's selling for. When you list a sell
+order you're serving a different buyer — the one who wants it now. So buy-order
+depth ranks demand, but quantities are sized from the destination region's
+actual traded volume.
+
+**Fees differ by how you transact.** Placing an order costs the broker fee;
+filling someone else's does not. So buying via buy orders costs broker fee,
+buying off sell orders doesn't; listing costs broker fee plus sales tax, while
+selling into a buy order pays sales tax only. All four paths are modelled
+separately.
+
+---
+
+## Citadel markets
+
+If the destination market is a player citadel, unauthenticated ESI cannot see
+it at all. Use the client's own export:
+
+1. In EVE, open the market and click export.
+2. `eve-market import-marketlog ~/Documents/EVE/logs/Marketlogs`
+
+That loads the client's CSV as a snapshot, and everything downstream works
+normally. Reading a file the client wrote is not automation.
 
 ---
 
 ## Configuration
 
-All settings come from `.env` (see `.env.example`) and are prefixed `EVE_`.
+`.env`, all prefixed `EVE_`. See `.env.example`.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `EVE_CONTACT_EMAIL` | — | **Required.** CCP mandates a contact address in the User-Agent |
-| `EVE_ESI_LIVE` | `false` | `true` hits real ESI, `false` uses fixtures |
-| `EVE_DATABASE_URL` | `postgresql://eve:eve@localhost:5432/eve_market` | |
-| `EVE_REDIS_URL` | `redis://localhost:6379/0` | Falls back to in-memory if absent |
-| `EVE_SALES_TAX` | `0.036` | 8% base, −11%/level of Accounting. `0.036` = Accounting V |
-| `EVE_BROKER_FEE` | `0.015` | 3% base, reduced by Broker Relations and standings |
-| `EVE_ESI_CONCURRENCY` | `8` | Max in-flight ESI requests |
+| `EVE_CONTACT_EMAIL` | — | **Required.** CCP mandates it in the User-Agent |
+| `EVE_ESI_LIVE` | `false` | `false` runs entirely from fixtures, no network |
+| `EVE_DEST_SYSTEM_ID` | `0` | **Set this via `resolve`** — 0 means unresolved |
+| `EVE_DEST_IS_LOWSEC` | `true` | Drives the risk model; wrong value distorts every margin |
+| `EVE_SHIP` | `dst` | `blockade_runner`, `dst`, `freighter` |
+| `EVE_SALES_TAX` | `0.036` | 8% base, −11%/level Accounting. `0.036` = Accounting V |
+| `EVE_BROKER_FEE` | `0.015` | 3% base, less Broker Relations and standings |
+| `EVE_CAPTURE_RATE` | `0.25` | Share of destination turnover you assume you win |
+| `EVE_DAYS_OF_STOCK` | `7.0` | How many days of demand to carry |
+| `EVE_GREENFIELD_MARKUP` | `0.35` | Markup when nobody else is selling |
 
 **Set the tax and fee rates to match your character.** They're applied to every
-profit calculation, and leaving them at the defaults when your skills are lower
-will make marginal trades look profitable when they aren't.
+calculation, and leaving them optimistic makes marginal trades look viable.
 
 ---
 
-## How the numbers are calculated
+## Offline mode
 
-**Station trading** — you place both orders, so the broker fee is charged
-twice and sales tax once:
+`EVE_ESI_LIVE=false` serves every call from `tests/fixtures/`. The entire app,
+CLI included, runs with no internet. This is how it was developed and tested.
 
-```
-cost    = buy_price  × (1 + broker_fee)
-revenue = sell_price × (1 − broker_fee − sales_tax)
-profit  = revenue − cost
-```
-
-**Hauling** — you fill existing orders, so selling into a buy order pays sales
-tax but no broker fee:
-
-```
-profit = dest_buy_price × (1 − sales_tax) − source_sell_price
-```
-
-Pass `sell_to_buy_orders=False` if you'd rather list your own sell orders at
-the destination, and the broker fee applies there too.
-
-Two deliberate conservatisms, because screeners that omit them produce numbers
-that never materialise:
-
-- **Capture rate.** `Est. ISK/day` assumes you win only **10%** of an item's
-  daily volume. You are not the only trader in Jita.
-- **ISK/m³ ranking.** Hauls rank by ISK per cubic metre, not total profit,
-  because cargo space is the binding constraint on any real haul.
+To record a real fixture, save the response as the request path with `/`
+replaced by `_`: `/v1/markets/10000002/orders/` →
+`_v1_markets_10000002_orders_.json`.
 
 ---
 
@@ -122,78 +215,73 @@ that never materialise:
 
 | Command | Purpose |
 | --- | --- |
-| `eve-market doctor` | Check ESI, Redis, Postgres and config; run this first |
-| `eve-market migrate` | Create the database schema |
-| `eve-market snapshot <region>` | Pull and store a region's order book |
-| `eve-market spreads <region>` | Rank station-trading spreads |
-| `eve-market haul <src> <dst>` | Rank cross-region hauls |
-| `eve-market load-sde <file>` | Load item names and volumes |
-
-Regions and stations accept either a name or a raw id:
-`the_forge`, `domain`, `sinq_laison`, `heimatar`, `metropolis`.
-
----
-
-## ESI etiquette
-
-The client implements the rules CCP asks third-party developers to follow.
-These aren't optional niceties — ignoring them gets an application
-rate-limited or banned:
-
-- A descriptive **User-Agent** with a contact address on every request.
-- Responses cached until their `Expires` header; nothing is re-requested
-  early.
-- Stale entries revalidated with `If-None-Match`, so a 304 costs no bandwidth
-  and no error budget.
-- `X-ESI-Error-Limit-Remain` watched, and requests **paused** when the shared
-  budget runs low rather than burning it to zero.
-- Transient 5xx retried with exponential backoff; 4xx raised immediately.
-
-Note that Tranquility has a daily downtime around **11:00–11:15 UTC**, during
-which ESI returns errors. That's expected, not a bug.
+| `doctor` | Check ESI, Redis, Postgres, config |
+| `resolve <system>` | Confirm destination ids and security status |
+| `migrate` | Create the schema |
+| `snapshot <region>` | Pull and store a region's order book |
+| `fetch-history <region>` | Pull daily volume history |
+| `stock` | **Main screen** — what to buy in Jita for the destination |
+| `buy-list` | Multibuy shopping list → clipboard |
+| `price <item>` | Price to list or bid at → clipboard |
+| `buy` / `sell` | Record purchases and sales |
+| `haul-cost <isk>` | Allocate a trip's cost across lots |
+| `position` / `pnl` | Stock on hand, capital, realised profit |
+| `import-marketlog <dir>` | Import the client's market export |
+| `spreads <region>` | Station trading within one hub |
+| `haul <src> <dst>` | Generic region-to-region arbitrage |
 
 ---
 
 ## Development
 
 ```bash
-source .venv/bin/activate
-pytest                       # 33 tests
+pytest        # 85 tests
 ruff check .
 ```
 
-Database tests skip automatically if Postgres isn't reachable, so the suite
-runs on a bare checkout.
+Database tests skip automatically when Postgres isn't reachable.
 
 ```
 src/eve_market/
-  config.py          settings, region and station ids
-  cache.py           Redis with in-memory fallback
-  db.py              Postgres persistence
+  config.py            settings, hub ids, ship and pricing defaults
+  cache.py             Redis with in-memory fallback
+  db.py                Postgres persistence
+  ledger.py            cost basis, FIFO sales, restock pricing
+  clipboard.py         Multibuy lists and price formatting
+  marketlog.py         EVE client market log import
   esi/
-    client.py        ETag caching, pagination, error-limit backoff
-    market.py        typed endpoint wrappers
-    models.py        pydantic schemas
+    client.py          ETag caching, pagination, error-limit backoff
+    market.py          market endpoint wrappers
+    universe.py        name and id resolution
   analysis/
-    margins.py       station-trading spread maths
-    hauling.py       cross-region arbitrage
-  cli.py             typer CLI
-sql/schema.sql       snapshots, history, item data
+    sourcing.py        the Jita -> destination screen
+    logistics.py       ship capacity, freight and risk
+    margins.py         station trading spreads
+    hauling.py         generic region arbitrage
 ```
 
 ---
 
-## Where to take it next
+## ESI etiquette
 
-- **Character data** — the SSO scaffolding is stubbed in `config.py`
-  (`client_id` / `client_secret` / `callback_url`). Register an app at
-  [developers.eveonline.com](https://developers.eveonline.com/applications),
-  add the OAuth2 PKCE flow, and `/characters/{id}/orders/` gives you your own
-  positions to track against these spreads.
-- **Scheduled snapshots** — a cron or systemd timer running `snapshot` hourly
-  turns the snapshot table into a real time series, which is what you need to
-  spot spreads widening rather than just spreads existing.
-- **Player structures** — `/markets/structures/{id}/` covers trade hubs in
-  citadels, but it needs auth and a structure id you have docking access to.
-- **A web UI** — the analysis functions are pure and take plain lists of
-  orders, so wrapping them in FastAPI is straightforward.
+Implemented, because ignoring these gets an app rate-limited or banned:
+descriptive User-Agent with contact address; responses cached until `Expires`;
+stale entries revalidated with `If-None-Match` so 304s cost no error budget;
+`X-ESI-Error-Limit-Remain` watched and requests **paused** before the shared
+budget drains; 5xx retried with backoff, 4xx raised immediately.
+
+Tranquility's daily downtime is roughly **11:00–11:15 UTC**; ESI errors then
+are expected.
+
+---
+
+## Next steps
+
+- **SSO** for your own orders and wallet. Scaffolding is in `config.py`
+  (`client_id`/`client_secret`/`callback_url`); register at
+  [developers.eveonline.com](https://developers.eveonline.com/applications).
+  `/characters/{id}/orders/` would let `price` show which of your listings have
+  been undercut, turning the relist loop into a single worklist.
+- **Scheduled snapshots** so spreads can be watched widening, not just existing.
+- **Transaction import** from `/characters/{id}/wallet/transactions/` to
+  populate the ledger automatically instead of typing `buy`/`sell` by hand.

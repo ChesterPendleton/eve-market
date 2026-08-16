@@ -68,3 +68,57 @@ CREATE TABLE IF NOT EXISTS inv_type (
 );
 
 CREATE INDEX IF NOT EXISTS inv_type_name_idx ON inv_type (lower(type_name));
+
+-- ---------------------------------------------------------------------------
+-- Cost basis ledger
+--
+-- Inventory is tracked as lots rather than a running average, because the
+-- question "what did THIS stock cost me" needs the individual purchase to
+-- still be there. Sales consume lots FIFO, which matches how you'd actually
+-- clear old stock first.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS purchase_lot (
+    id            BIGSERIAL PRIMARY KEY,
+    type_id       INTEGER       NOT NULL,
+    qty           INTEGER       NOT NULL CHECK (qty > 0),
+    qty_remaining INTEGER       NOT NULL CHECK (qty_remaining >= 0),
+    unit_price    NUMERIC(18,2) NOT NULL,
+    -- Broker fee paid to place the buy order, if bought that way.
+    fees          NUMERIC(18,2) NOT NULL DEFAULT 0,
+    -- Freight and risk allocated to this lot; filled in by `haul` after the
+    -- trip, since you don't know the trip cost at purchase time.
+    haul_cost     NUMERIC(18,2) NOT NULL DEFAULT 0,
+    station_id    BIGINT,
+    acquired_at   TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    note          TEXT
+);
+
+-- Open lots are read constantly for pricing; closed ones only for history.
+CREATE INDEX IF NOT EXISTS purchase_lot_open_idx
+    ON purchase_lot (type_id, acquired_at) WHERE qty_remaining > 0;
+
+CREATE TABLE IF NOT EXISTS sale (
+    id              BIGSERIAL PRIMARY KEY,
+    type_id         INTEGER       NOT NULL,
+    qty             INTEGER       NOT NULL CHECK (qty > 0),
+    unit_price      NUMERIC(18,2) NOT NULL,
+    gross           NUMERIC(18,2) NOT NULL,
+    fees            NUMERIC(18,2) NOT NULL DEFAULT 0,
+    cogs            NUMERIC(18,2) NOT NULL DEFAULT 0,
+    realized_profit NUMERIC(18,2) NOT NULL DEFAULT 0,
+    station_id      BIGINT,
+    sold_at         TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS sale_type_time_idx ON sale (type_id, sold_at DESC);
+
+-- Which lots covered which sale. Kept so a surprising profit number can be
+-- traced back to the purchases behind it.
+CREATE TABLE IF NOT EXISTS lot_consumption (
+    sale_id          BIGINT NOT NULL REFERENCES sale(id) ON DELETE CASCADE,
+    lot_id           BIGINT NOT NULL REFERENCES purchase_lot(id) ON DELETE CASCADE,
+    qty              INTEGER       NOT NULL,
+    unit_landed_cost NUMERIC(18,2) NOT NULL,
+    PRIMARY KEY (sale_id, lot_id)
+);
