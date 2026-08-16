@@ -57,6 +57,15 @@ async def test_cancelled_orders_carry_no_verdict():
     assert dc.fill_rate is None
 
 
-def test_ranking_is_by_units_sold():
-    stats = sellthrough.summarize([], now=NOW)
-    assert stats == []
+def test_empty_history_is_empty():
+    assert sellthrough.summarize([], now=NOW) == []
+
+
+@pytest.mark.asyncio
+async def test_ranking_is_by_units_sold():
+    async with build_client() as esi:
+        closed = await character.my_order_history(esi, 12345678)
+    stats = sellthrough.summarize(closed, now=NOW)
+    # WD II sold 115 units, DC II sold 80: most-moved first.
+    assert [s.type_id for s in stats] == [3244, 2048]
+    assert stats[0].units_sold >= stats[1].units_sold

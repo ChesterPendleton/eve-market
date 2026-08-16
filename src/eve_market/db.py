@@ -202,6 +202,10 @@ class Database:
         if not orders:
             return 0
         pool = self._require_pool()
+        existing = await pool.fetchval(
+            "SELECT COUNT(*) FROM character_order_history WHERE order_id = ANY($1::bigint[])",
+            [o.order_id for o in orders],
+        )
         await pool.executemany(
             "INSERT INTO character_order_history "
             "(order_id, type_id, region_id, location_id, is_buy_order, price, "
@@ -226,7 +230,7 @@ class Database:
                 for o in orders
             ],
         )
-        return len(orders)
+        return len(orders) - existing
 
     async def closed_orders(self) -> list[dict[str, Any]]:
         """Everything the order-history sync has accumulated."""

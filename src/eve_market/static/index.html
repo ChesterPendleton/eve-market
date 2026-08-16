@@ -202,7 +202,9 @@ async function api(path, opts) {
   if (!r.ok) throw new Error((body && (body.detail || body.error)) || r.statusText);
   return body;
 }
-const post = (path, data) => api(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data || {})});
+// x-eve-market matches the server's CSRF guard: cross-origin pages cannot
+// send custom headers without a CORS preflight this server never grants.
+const post = (path, data) => api(path, {method: "POST", headers: {"Content-Type": "application/json", "x-eve-market": "1"}, body: JSON.stringify(data || {})});
 
 let toastTimer;
 function toast(msg, ms=4000) {
@@ -345,6 +347,7 @@ const tabs = {
       $("#main").innerHTML = h; return;
     }
     if (data.warning) h += `<div class="notice">${esc(data.warning)}</div>`;
+    state.stockRows = data.rows;
     const p = data.profile;
     h += `<div class="totals">${esc(p.ship)} · ${isk(p.capacity_m3,0)} m³ · risk ${pct(p.risk_pct)} —
       est. profit <b>${iskShort(data.totals.profit)}</b> ISK on <b>${iskShort(data.totals.spend)}</b> spend, ${isk(data.totals.m3,0)} m³ used</div>`;
@@ -373,9 +376,13 @@ const tabs = {
       render();
     };
     $("#btn-buylist").onclick = async ev => {
-      const d = await api("/api/buy-list?min_margin=" + state.filters.min_margin);
-      if (d.text) { await copyText(d.text, ev.target); toast(`Multibuy list for ${d.count} items copied — paste into the Multibuy window in Jita`); }
-      else toast(d.error || "nothing to buy");
+      // Built from the rows on screen, so it always matches the filters the
+      // user is looking at — never a second server call with other defaults.
+      const rows = (state.stockRows || []).filter(r => r.suggested_qty > 0);
+      if (!rows.length) { toast("nothing to buy under the current filters"); return; }
+      const text = rows.map(r => `${r.name} x${r.suggested_qty}`).join("\n");
+      await copyText(text, ev.target);
+      toast(`Multibuy list for ${rows.length} items copied — paste into the Multibuy window in Jita`);
     };
   },
 

@@ -141,20 +141,47 @@ def snapshot(
             merged = 0
             if structure_id:
                 from . import auth as auth_mod
+                from .esi import character as character_mod
 
-                tokens = auth_mod.ensure_fresh(settings.client_id)
-                if tokens is None:
-                    console.print(
-                        "[yellow]structure book skipped[/] — not logged in "
-                        "(run `eve-market login`)"
-                    )
+                tokens = None
+                try:
+                    tokens = auth_mod.ensure_fresh(settings.client_id)
+                except Exception as exc:  # noqa: BLE001 - a failed refresh
+                    console.print(f"[yellow]structure book skipped[/] — {str(exc)[:80]}")
                 else:
-                    async with build_client(access_token=tokens.access_token) as auth_esi:
-                        extra = await market.structure_book(
-                            auth_esi, structure_id, settings.dest_system_id or None
+                    if tokens is None:
+                        console.print(
+                            "[yellow]structure book skipped[/] — not logged in "
+                            "(run `eve-market login`)"
                         )
-                    orders = list(orders) + extra
-                    merged = len(extra)
+                if tokens is not None:
+                    # The structure's own system, so a citadel snapshotted with
+                    # any region lands under the right destination filter.
+                    try:
+                        async with build_client(
+                            access_token=tokens.access_token
+                        ) as auth_esi:
+                            try:
+                                info = await character_mod.structure_info(
+                                    auth_esi, structure_id
+                                )
+                                sys_id = info.get("solar_system_id")
+                            except Exception:  # noqa: BLE001 - info is a nicety
+                                sys_id = (
+                                    settings.dest_system_id or None
+                                    if region_id == settings.dest_region_id
+                                    else None
+                                )
+                            extra = await market.structure_book(
+                                auth_esi, structure_id, sys_id
+                            )
+                        orders = list(orders) + extra
+                        merged = len(extra)
+                    except Exception as exc:  # noqa: BLE001 - degrade, don't abort
+                        console.print(
+                            f"[yellow]structure book skipped[/] — {str(exc)[:80]}; "
+                            "saving the public book alone"
+                        )
             snapshot_id = await db.save_snapshot(region_id, orders)
         note = f" (incl. {merged:,} structure orders)" if merged else ""
         console.print(
@@ -313,7 +340,9 @@ def load_sde(path: Path = typer.Argument(..., help="JSON array of type rows")) -
 
 @app.command("fetch-sde")
 def fetch_sde(
-    keep: bool = typer.Option(False, help="Keep the downloaded SDE file afterwards"),
+    clean: bool = typer.Option(
+        False, help="Delete the ~500MB SDE file after loading (re-runs re-download)"
+    ),
 ) -> None:
     """Download the SDE and load item names and cargo volumes in one step.
 
@@ -347,10 +376,12 @@ def fetch_sde(
 
     asyncio.run(run())
 
-    if not keep:
-        # ~500MB that has served its purpose; Postgres has the rows now.
+    if clean:
         db_path.unlink(missing_ok=True)
-        console.print("[dim]removed the temporary SDE file (use --keep to retain it)[/]")
+        console.print("[dim]removed the SDE file[/]")
+    else:
+        # Kept so re-running setup doesn't re-download 150MB. `--clean` removes it.
+        console.print(f"[dim]{db_path} kept — future runs reuse it (--clean to remove)[/]")
 
 
 

@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from . import auth
 from . import clipboard as clip
 from .analysis import relist as relist_mod
-from .analysis import sourcing
+from .analysis import screen, sourcing
 from .analysis.logistics import SHIPS, profile_for, warn_for
 from .config import REGIONS, settings
 from .db import Database
@@ -42,6 +42,25 @@ from .ledger import Ledger
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="eve-market", docs_url=None, redoc_url=None)
+
+
+@app.middleware("http")
+async def _local_only_guard(request: Any, call_next: Any) -> Any:
+    """Refuse anything that isn't provably the local dashboard talking.
+
+    The server binds 127.0.0.1, but that alone stops neither DNS rebinding
+    (a hostile page resolving its own domain to 127.0.0.1 — caught by the
+    Host check) nor blind CSRF POSTs from any website (bodyless actions like
+    /api/actions/sync need no CORS preflight — caught by requiring a custom
+    header, which cross-origin pages cannot set without a preflight this
+    server never grants).
+    """
+    host = (request.headers.get("host") or "").split(":")[0]
+    if host not in ("127.0.0.1", "localhost", "[::1]"):
+        return JSONResponse(status_code=403, content={"error": "local access only"})
+    if request.method == "POST" and request.headers.get("x-eve-market") != "1":
+        return JSONResponse(status_code=403, content={"error": "missing app header"})
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -90,12 +109,28 @@ async def _full_region_book(region_id: int) -> tuple[list, int]:
     if region_id == settings.dest_region_id and settings.dest_structure_id:
         tokens = _tokens()
         if tokens is not None:
-            async with build_client(access_token=tokens.access_token) as esi:
-                extra = await market.structure_book(
-                    esi, settings.dest_structure_id, settings.dest_system_id or None
+            # A lost docking right or ESI hiccup must not sink the whole
+            # snapshot — the public book alone is still worth saving.
+            try:
+                async with build_client(access_token=tokens.access_token) as esi:
+                    try:
+                        info = await character.structure_info(
+                            esi, settings.dest_structure_id
+                        )
+                        system_id = info.get("solar_system_id")
+                    except Exception:  # noqa: BLE001 - info is a nicety
+                        system_id = settings.dest_system_id or None
+                    extra = await market.structure_book(
+                        esi, settings.dest_structure_id, system_id
+                    )
+                book += extra
+                merged = len(extra)
+            except Exception as exc:  # noqa: BLE001 - degrade, don't abort
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "structure %s book skipped: %s", settings.dest_structure_id, exc
                 )
-            book += extra
-            merged = len(extra)
     return book, merged
 
 
@@ -274,6 +309,7 @@ async def stock(
     min_margin: float = 0.10,
     min_volume: float = 20.0,
     min_price: float = 1000.0,
+    max_price: float | None = None,
     undersupplied: bool = False,
     fit: bool = True,
     limit: int = 40,
@@ -286,84 +322,27 @@ async def stock(
         risk_pct=settings.haul_risk_pct,
     )
     capacity = settings.cargo_m3 or profile.capacity_m3
-
+    filters = screen.StockFilters(
+        buy_orders=buy_orders,
+        min_margin=min_margin,
+        min_volume=min_volume,
+        min_price=min_price,
+        max_price=max_price,
+        undersupplied=undersupplied,
+        fit=fit,
+        limit=limit,
+    )
     async with Database(settings.database_url) as db:
-        src_snap = await db.latest_snapshot(settings.source_region_id)
-        dst_snap = await db.latest_snapshot(settings.dest_region_id)
-        if src_snap is None or dst_snap is None:
-            return {
-                "error": "need snapshots of both the source and destination regions",
-                "hint": "Run the two Snapshot buttons above, then Fetch history.",
-                "rows": [],
-            }
-        pool = db._require_pool()
-        dest_types = [
-            r["type_id"]
-            for r in await pool.fetch(
-                "SELECT DISTINCT type_id FROM market_order "
-                "WHERE snapshot_id = $1 AND ($2::int = 0 OR system_id = $2)",
-                dst_snap,
-                settings.dest_system_id,
-            )
-        ]
-        if not dest_types:
-            return {
-                "error": "no orders found at the destination system",
-                "hint": "Check EVE_DEST_SYSTEM_ID, or the market may be a citadel "
-                "(see import-marketlog in the README).",
-                "rows": [],
-            }
+        result = await screen.stock_screen(db, profile, capacity, filters)
 
-        volumes = await db.type_volumes(dest_types)
-        opportunities = []
-        for type_id in dest_types:
-            src_orders = await db.orders_for_type(src_snap, type_id)
-            if not src_orders:
-                continue
-            src_vol = sourcing.average_daily_volume(
-                await db.history_for_type(settings.source_region_id, type_id)
-            )
-            if src_vol < min_volume:
-                continue
-            opp = sourcing.evaluate(
-                type_id,
-                src_orders,
-                await db.orders_for_type(dst_snap, type_id),
-                haul=profile,
-                sales_tax=settings.sales_tax,
-                broker_fee=settings.broker_fee,
-                source_station_id=settings.source_station_id,
-                dest_system_id=settings.dest_system_id or None,
-                source_daily_volume=src_vol,
-                dest_daily_volume=sourcing.average_daily_volume(
-                    await db.history_for_type(settings.dest_region_id, type_id)
-                ),
-                unit_volume_m3=volumes.get(type_id),
-                buy_with_orders=buy_orders,
-                undercut_isk=settings.undercut_isk,
-                greenfield_markup=settings.greenfield_markup,
-                days_of_stock=settings.days_of_stock,
-                capture_rate=settings.capture_rate,
-                cargo_m3=capacity,
-            )
-            if opp is None or opp.acquire_price < min_price:
-                continue
-            opportunities.append(opp)
+    if result.error:
+        return {"error": result.error, "hint": result.hint, "rows": []}
 
-        best = sourcing.rank(
-            opportunities,
-            min_margin=min_margin,
-            min_demand_ratio=1.0 if undersupplied else 0.0,
-        )
-        if fit:
-            best = sourcing.fit_to_hold(best, capacity)
-        best = best[:limit]
-        names = await db.type_names([o.type_id for o in best])
-
+    best = result.opportunities
     rows = []
     for o in best:
         d = asdict(o)
-        d["name"] = names.get(o.type_id, str(o.type_id))
+        d["name"] = result.names.get(o.type_id, str(o.type_id))
         rows.append(d)
     return {
         "rows": rows,

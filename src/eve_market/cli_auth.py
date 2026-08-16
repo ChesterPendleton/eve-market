@@ -358,7 +358,11 @@ def sellthrough() -> None:
         from .esi.character import ClosedOrder
 
         async with Database(settings.database_url) as db:
-            raw = await db.closed_orders()
+            try:
+                raw = await db.closed_orders()
+            except Exception:  # noqa: BLE001 - table missing on an old schema
+                await db.migrate()
+                raw = await db.closed_orders()
             closed = [ClosedOrder.model_validate(r) for r in raw]
             if not closed:
                 console.print(

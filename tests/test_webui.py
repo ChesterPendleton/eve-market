@@ -10,8 +10,29 @@ from eve_market import webui
 
 @pytest.fixture()
 def client():
-    with TestClient(webui.app, raise_server_exceptions=False) as c:
+    # base_url and header mirror what the real dashboard sends; anything else
+    # is refused by design (see the guard tests below).
+    with TestClient(
+        webui.app,
+        base_url="http://127.0.0.1",
+        raise_server_exceptions=False,
+        headers={"x-eve-market": "1"},
+    ) as c:
         yield c
+
+
+def test_foreign_host_is_refused():
+    # DNS rebinding: a hostile page's domain resolving to 127.0.0.1 still
+    # carries its own Host header, and that must be enough to refuse it.
+    with TestClient(webui.app, base_url="http://evil.example", raise_server_exceptions=False) as c:
+        assert c.get("/api/status").status_code == 403
+
+
+def test_post_without_app_header_is_refused(client):
+    # Cross-origin pages can send bodyless POSTs without any CORS preflight;
+    # the custom header is what they cannot forge.
+    r = client.post("/api/actions/sync", headers={"x-eve-market": ""})
+    assert r.status_code == 403
 
 
 def test_index_serves_html(client):

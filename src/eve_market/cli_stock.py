@@ -14,7 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import clipboard as clip
-from .analysis import sourcing
+from .analysis import screen, sourcing
 from .analysis.logistics import SHIPS, HaulProfile, profile_for, warn_for
 from .config import settings
 from .db import Database
@@ -190,90 +190,25 @@ def stock(
     capacity = _capacity(profile, cargo)
 
     async def run() -> None:
+        filters = screen.StockFilters(
+            buy_orders=buy_orders,
+            min_margin=min_margin,
+            min_volume=min_volume,
+            min_price=min_price,
+            max_price=max_price,
+            undersupplied=undersupplied,
+            fit=fit,
+            limit=limit,
+        )
         async with Database(settings.database_url) as db:
-            src_snap = await db.latest_snapshot(settings.source_region_id)
-            dst_snap = await db.latest_snapshot(settings.dest_region_id)
-            if src_snap is None or dst_snap is None:
-                console.print(
-                    "[red]need a snapshot of both regions.[/] Run:\n"
-                    "  eve-market snapshot the_forge\n"
-                    f"  eve-market snapshot {settings.dest_region_id}"
-                )
-                raise typer.Exit(1)
-
-            pool = db._require_pool()
-            # Candidates: anything quoted at the destination system, either
-            # side. A buy order with no matching sell order is the best case,
-            # so we must not require both sides to exist.
-            dest_types = [
-                r["type_id"]
-                for r in await pool.fetch(
-                    "SELECT DISTINCT type_id FROM market_order "
-                    "WHERE snapshot_id = $1 AND ($2::int = 0 OR system_id = $2)",
-                    dst_snap,
-                    settings.dest_system_id,
-                )
-            ]
-            if not dest_types:
-                console.print(
-                    "[yellow]no orders found at the destination system.[/] "
-                    "Check EVE_DEST_SYSTEM_ID (run `eve-market resolve`), or the market "
-                    "may be a citadel — see `import-marketlog`."
-                )
-                raise typer.Exit(1)
-
-            volumes = await db.type_volumes(dest_types)
-            opportunities = []
-            for type_id in dest_types:
-                src_orders = await db.orders_for_type(src_snap, type_id)
-                dst_orders = await db.orders_for_type(dst_snap, type_id)
-                if not src_orders:
-                    continue
-
-                src_hist = await db.history_for_type(settings.source_region_id, type_id)
-                dst_hist = await db.history_for_type(settings.dest_region_id, type_id)
-                src_vol = sourcing.average_daily_volume(src_hist)
-                dst_vol = sourcing.average_daily_volume(dst_hist)
-
-                if src_vol < min_volume:
-                    continue
-
-                opp = sourcing.evaluate(
-                    type_id,
-                    src_orders,
-                    dst_orders,
-                    haul=profile,
-                    sales_tax=settings.sales_tax,
-                    broker_fee=settings.broker_fee,
-                    source_station_id=settings.source_station_id,
-                    dest_system_id=settings.dest_system_id or None,
-                    source_daily_volume=src_vol,
-                    dest_daily_volume=dst_vol,
-                    unit_volume_m3=volumes.get(type_id),
-                    buy_with_orders=buy_orders,
-                    undercut_isk=settings.undercut_isk,
-                    greenfield_markup=settings.greenfield_markup,
-                    days_of_stock=settings.days_of_stock,
-                    capture_rate=settings.capture_rate,
-                    cargo_m3=capacity,
-                )
-                if opp is None:
-                    continue
-                if opp.acquire_price < min_price:
-                    continue
-                if max_price is not None and opp.acquire_price > max_price:
-                    continue
-                opportunities.append(opp)
-
-            best = sourcing.rank(
-                opportunities,
-                min_margin=min_margin,
-                min_demand_ratio=1.0 if undersupplied else 0.0,
-            )
-            if fit:
-                best = sourcing.fit_to_hold(best, capacity)
-            best = best[:limit]
-            names = await db.type_names([o.type_id for o in best])
+            result = await screen.stock_screen(db, profile, capacity, filters)
+        if result.error:
+            console.print(f"[red]{result.error}[/]")
+            if result.hint:
+                console.print(f"[dim]{result.hint}[/]")
+            raise typer.Exit(1)
+        best = result.opportunities
+        names = result.names
 
         warning = warn_for(profile, settings.dest_is_lowsec)
         if warning:
@@ -344,62 +279,16 @@ def buy_list(
     capacity = _capacity(profile, cargo)
 
     async def run() -> None:
+        filters = screen.StockFilters(
+            buy_orders=buy_orders, min_margin=min_margin, min_volume=min_volume, limit=limit
+        )
         async with Database(settings.database_url) as db:
-            src_snap = await db.latest_snapshot(settings.source_region_id)
-            dst_snap = await db.latest_snapshot(settings.dest_region_id)
-            if src_snap is None or dst_snap is None:
-                console.print("[red]need snapshots of both regions[/]")
-                raise typer.Exit(1)
-
-            pool = db._require_pool()
-            dest_types = [
-                r["type_id"]
-                for r in await pool.fetch(
-                    "SELECT DISTINCT type_id FROM market_order "
-                    "WHERE snapshot_id = $1 AND ($2::int = 0 OR system_id = $2)",
-                    dst_snap,
-                    settings.dest_system_id,
-                )
-            ]
-            volumes = await db.type_volumes(dest_types)
-            opportunities = []
-            for type_id in dest_types:
-                src_orders = await db.orders_for_type(src_snap, type_id)
-                if not src_orders:
-                    continue
-                src_vol = sourcing.average_daily_volume(
-                    await db.history_for_type(settings.source_region_id, type_id)
-                )
-                if src_vol < min_volume:
-                    continue
-                opp = sourcing.evaluate(
-                    type_id,
-                    src_orders,
-                    await db.orders_for_type(dst_snap, type_id),
-                    haul=profile,
-                    sales_tax=settings.sales_tax,
-                    broker_fee=settings.broker_fee,
-                    source_station_id=settings.source_station_id,
-                    dest_system_id=settings.dest_system_id or None,
-                    source_daily_volume=src_vol,
-                    dest_daily_volume=sourcing.average_daily_volume(
-                        await db.history_for_type(settings.dest_region_id, type_id)
-                    ),
-                    unit_volume_m3=volumes.get(type_id),
-                    buy_with_orders=buy_orders,
-                    undercut_isk=settings.undercut_isk,
-                    greenfield_markup=settings.greenfield_markup,
-                    days_of_stock=settings.days_of_stock,
-                    capture_rate=settings.capture_rate,
-                    cargo_m3=capacity,
-                )
-                if opp:
-                    opportunities.append(opp)
-
-            best = sourcing.fit_to_hold(
-                sourcing.rank(opportunities, min_margin=min_margin), capacity
-            )[:limit]
-            names = await db.type_names([o.type_id for o in best])
+            result = await screen.stock_screen(db, profile, capacity, filters)
+        if result.error:
+            console.print(f"[red]{result.error}[/]")
+            raise typer.Exit(1)
+        best = result.opportunities
+        names = result.names
 
         items = [(names.get(o.type_id, str(o.type_id)), o.suggested_qty) for o in best]
         text = clip.multibuy_list(items)

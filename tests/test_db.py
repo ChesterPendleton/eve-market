@@ -36,6 +36,7 @@ async def db():
     await pool.execute("TRUNCATE market_snapshot CASCADE")
     await pool.execute("TRUNCATE market_history")
     await pool.execute("TRUNCATE inv_type")
+    await pool.execute("TRUNCATE character_order_history")
     yield database
     await database.close()
 
